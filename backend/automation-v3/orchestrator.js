@@ -262,6 +262,44 @@ async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled",
     jobs = [];
   }
   const workflowArtifacts = await readV3WorkflowArtifactHealth(db, internalGameId, persistedState);
+  // Multi-team candidates are stored in contest_lineup_revisions. The legacy
+  // workflow reader is game-scoped, so inspect only the exact contest's rows
+  // before allowing its finalize job; sibling contests cannot qualify it.
+  let contestLineupHealth = workflowArtifacts.lineup;
+  if (targetTeamKey && contestId) {
+    contestLineupHealth = {
+      available: false,
+      candidateExists: false,
+      candidateValid: false,
+      canonicalDataReady: false,
+      canonicalValid: false
+    };
+    try {
+      const rows = await db.prepare(
+        `SELECT actual_lineup_json, is_final, source FROM contest_lineup_revisions
+          WHERE contest_id = ?1 ORDER BY version DESC LIMIT 20`
+      ).bind(contestId).all();
+      const candidates = (rows.results || []).filter((row) => Number(row.is_final || 0) !== 1
+        && !isShadowLineupRevision(row));
+      const valid = candidates.some((row) => {
+        try {
+          return assessV3LineupArtifact(JSON.parse(String(row.actual_lineup_json || "null"))).ok;
+        } catch {
+          return false;
+        }
+      });
+      contestLineupHealth = {
+        available: true,
+        candidateExists: valid,
+        candidateValid: valid,
+        canonicalDataReady: false,
+        canonicalValid: false
+      };
+    } catch {
+      // A missing/unreadable contest artifact must block finalize rather than
+      // falling back to a game-scoped sibling revision.
+    }
+  }
   const rosterSnapshot = await getV3CanonicalRosterSnapshot(db, internalGameId, {
     gameDate: game.gameDate || game.game_date
   });
@@ -291,7 +329,7 @@ async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled",
       available: jobs.some((job) => isV3JobForStage(job, "prediction_close") && String(job?.status || "").toLowerCase() === "completed"),
       valid: jobs.some((job) => isV3JobForStage(job, "prediction_close") && String(job?.status || "").toLowerCase() === "completed")
     },
-    lineup_fetch: workflowArtifacts.lineup,
+    lineup_fetch: contestLineupHealth,
     lineup_finalize: {
       available: scopedReadiness ? scopedReadiness.lineupReady === true : workflowArtifacts.lineup.finalizedValid,
       valid: scopedReadiness ? scopedReadiness.lineupReady === true : workflowArtifacts.lineup.finalizedValid

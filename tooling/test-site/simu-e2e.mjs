@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { TEST_TEAM_GROUPS, TEST_TEAMS, TEST_TEAM_KEYS } from "./teams.js";
+import { TEST_TEAM_GROUPS, TEST_TEAMS, testPredictionPlayerId } from "./teams.js";
 import { assertTestAuthConfig, TEST_AUTH_DB_ID, TEST_AUDIT_DB_ID } from "./isolation.js";
+import { classifyE2ECleanupResult } from "./cleanup-contract.js";
 import fs from "node:fs";
 
 const SITE_ORIGIN = "https://s9simu.pages.dev";
@@ -127,7 +128,7 @@ async function savePrediction(teamKey, internalGameId) {
     // Keep fake NPB IDs observable in the parsed source above, but submit the
     // same team-number IDs accepted by the public prediction form. This avoids
     // coupling synthetic predictions to the separate live-roster trust cache.
-    playerId: `${TEST_TEAMS[teamKey].playerTeamId}-${player.uniformNumber || player.number}`,
+    playerId: testPredictionPlayerId(teamKey, player.uniformNumber || player.number),
     playerName: player.name,
     uniformNumber: player.uniformNumber || player.number,
     teamCode: teamKey,
@@ -167,45 +168,58 @@ async function verifyPublished(teamKey, internalGameId) {
   assert.ok(detail.payload.actualLineup.every((player) => player.teamCode === teamKey), `${teamKey}: published lineup crossed team boundary`);
   const jobs = await call(`/api/test/jobs${query}`, { admin: true });
   assert.ok(jobs.payload.jobs.length > 0);
-  assert.ok(jobs.payload.jobs.every((job) => job.status === "completed"), `${teamKey}: formal jobs did not all complete`);
+  const required = new Set(["prediction_close", "lineup_finalize", "score", "ranking_rebuild", "publish"]);
+  for (const type of required) {
+    assert.ok(jobs.payload.jobs.some((job) => job.job_type === type && job.status === "completed"),
+      `${teamKey}: required ${type} job did not complete`);
+  }
+  assert.ok(jobs.payload.jobs.some((job) => job.job_type === "lineup_fetch" && job.status === "completed"),
+    `${teamKey}: official lineup fetch did not complete`);
+  assert.ok(jobs.payload.jobs.every((job) => !["claimed", "retry_wait", "failed"].includes(job.status)),
+    `${teamKey}: broken formal job state remains`);
+}
+
+async function fetchSimulatorSchedule() {
+  const response = await call("/api/test/simu/schedule?testTeam=fighters", {
+    method: "POST", body: {}, admin: true
+  });
+  const physicalGames = response.payload.physicalGames || [];
+  assert.equal(physicalGames.length, 6);
+  assert.equal(response.payload.contestCount, 12);
+  return physicalGames;
+}
+
+function simulatorGroupForGame(game) {
+  const match = String(game.game_code || "").match(/^g-t-(\d+)$/);
+  assert.ok(match, "schedule parser should preserve each simulator game code");
+  const group = TEST_TEAM_GROUPS[Number(match[1]) - 1];
+  assert.ok(group, "simulator game code must map to one of the six physical games");
+  assert.ok(game.internal_game_id, "simulator schedule must return its canonical internal game ID");
+  assert.equal(game.home_team, TEST_TEAMS[group.homeKey].key);
+  assert.equal(game.away_team, TEST_TEAMS[group.awayKey].key);
+  return group;
 }
 
 try {
   await provisionAdmin();
-  // Remove only the six fixed legacy E2E fixture rows before importing the
-  // simulator schedule. The no-game route is the existing scoped Test cleanup
-  // boundary; the newly fetched simulator games are retained after the run.
-  const clearedLegacyFixture = await call("/api/test/scenario?testTeam=fighters", {
-    method: "POST", body: { scenario: "no-game" }, admin: true
-  });
-  assert.equal(clearedLegacyFixture.payload.scenario, "no-game");
-  // An interrupted run can leave yesterday's simulator schedule behind. Remove
-  // each known synthetic game through the admin-only, internal-game-scoped
-  // Test cleanup route before the live date-relative parser fetches tomorrow's
-  // schedule; otherwise an expired deadline can make prediction saves fail.
-  for (const { internalGameId, homeKey } of TEST_TEAM_GROUPS) {
-    const query = `?internalGameId=${encodeURIComponent(internalGameId)}&testTeam=${homeKey}&simuNpb=1`;
+  // Discover the simulator's actual canonical IDs first. Cleanup is then
+  // bounded to those read-back IDs and participant contexts; never send a
+  // legacy fixture ID or invoke an unscoped no-game reset from this runner.
+  const previousRunGames = await fetchSimulatorSchedule();
+  assert.equal(new Set(previousRunGames.map((game) => game.internal_game_id)).size, previousRunGames.length);
+  for (const game of previousRunGames) {
+    const { homeKey } = simulatorGroupForGame(game);
+    const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${homeKey}&simuNpb=1`;
     const clearedSimulatorFixture = await call(`/api/test/scenario${query}`, {
       method: "POST", body: { scenario: "no-game" }, admin: true
     });
-    assert.equal(clearedSimulatorFixture.payload.scenario, "no-game", `${homeKey}: stale simulator fixture cleanup`);
+    assert.equal(clearedSimulatorFixture.payload.scenario, "no-game", `${homeKey}: stale run cleanup`);
   }
-  const schedule = await call("/api/test/simu/schedule?testTeam=fighters", {
-    method: "POST", body: {}, admin: true
-  });
-  const physicalGames = schedule.payload.physicalGames || [];
-  assert.equal(physicalGames.length, 6);
-  assert.equal(schedule.payload.contestCount, 12);
+  const physicalGames = await fetchSimulatorSchedule();
   const gamesByGroup = new Map();
   for (const game of physicalGames) {
-    const match = String(game.game_code || "").match(/^g-t-(\d+)$/);
-    assert.ok(match, "schedule parser should preserve each simulator game code");
-    const index = Number(match[1]) - 1;
-    const group = TEST_TEAM_GROUPS[index];
-    assert.ok(group, "simulator game code must map to one of the six physical games");
-    assert.equal(game.home_team, TEST_TEAMS[group.homeKey].key);
-    assert.equal(game.away_team, TEST_TEAMS[group.awayKey].key);
-    assert.ok(game.internal_game_id);
+    const group = simulatorGroupForGame(game);
+    const index = TEST_TEAM_GROUPS.indexOf(group);
     gamesByGroup.set(index, { ...group, game });
   }
   assert.equal(gamesByGroup.size, 6);
@@ -255,11 +269,14 @@ try {
         },
         admin: Boolean(cookie), authorizationToken: cookie ? "" : githubOidcToken
       });
-      if (cleanup.payload.retainedAsUser === true) {
+      const cleanupKind = classifyE2ECleanupResult(cleanup.payload);
+      if (cleanupKind === "retained-user") {
         assert.equal(cleanup.payload.removed, false);
         temporaryUserRetained = true;
+      } else if (cleanupKind === "deleted" || cleanupKind === "replay-blocked" || cleanupKind === "already-absent") {
+        temporaryUserRetained = false;
       } else {
-        assert.equal(cleanup.payload.removed, true);
+        assert.fail("E2E cleanup returned an unknown or contradictory outcome");
       }
       cookie = "";
     } catch (error) {

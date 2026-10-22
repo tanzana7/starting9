@@ -224,7 +224,7 @@ test("V3 runnerの補助job失敗はmain plannerを停止せず、仮想試合�
 
 test("lineup_fetchはcandidate/canonical dataなしでcompletedにせず、admin診断へ渡す", () => {
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
-  assert.match(worker, /getV3LineupDataHealth\(env\.AUTH_DB, internalGameId, stateBefore\)/);
+  assert.match(worker, /getV3LineupDataHealth\(env\.AUTH_DB, internalGameId, stateBefore, contestId\)/);
   assert.match(worker, /LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE/);
   assert.match(worker, /completedWithoutCandidate/);
 });

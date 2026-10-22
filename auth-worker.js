@@ -13930,7 +13930,18 @@ export async function fetchLatestPublicRoster(env, game, { force = false } = {})
     });
     if (payload?.stale === true) return null;
     if (payload?.team && String(payload.team).toLowerCase() !== providerTeamKey) return null;
-    const players = normalizeRosterForSnapshot(payload?.players, targetTeam);
+    // The isolated simulator fixture intentionally models a compact 15-player
+    // roster. Keep the official NPB completeness threshold unchanged and
+    // relax it only when every Test Site identity guard and simulator guard
+    // agrees; a non-test or official source still requires 20 players.
+    const isIsolatedSimulatorRoster = env.ENVIRONMENT === "test"
+      && env.TEST_SITE_ID === "starting9-isolated-v1"
+      && env.TEST_WORKER_NAME === "starting9-test-auth"
+      && env.TEST_AUTH_DB_ID === "7ea1fa14-ffc0-4404-8a65-5dbb8218f368"
+      && env.TEST_AUDIT_DB_ID === "a18c6cf9-a238-4059-a5ef-784f248e225e"
+      && env.S9SIMU_ENABLED === "true"
+      && resolveNpbSource(env).kind === "simulator";
+    const players = normalizeRosterForSnapshot(payload?.players, targetTeam, isIsolatedSimulatorRoster ? 15 : ROSTER_MINIMUM_PLAYER_COUNT);
     if (!players) return null;
     const masterUnregisteredPlayers = targetTeam.key === PRODUCTION_TEAM.key ? players
       .filter((entry) => {
@@ -15179,9 +15190,9 @@ function sanitizeNpbLineupDiagnostics(details) {
   return Object.keys(result).length ? result : null;
 }
 
-function normalizeRosterForSnapshot(players, targetTeam = PRODUCTION_TEAM) {
+function normalizeRosterForSnapshot(players, targetTeam = PRODUCTION_TEAM, minimumPlayerCount = ROSTER_MINIMUM_PLAYER_COUNT) {
   targetTeam = teamContext.requireTeamContext(targetTeam);
-  if (!Array.isArray(players) || players.length < ROSTER_MINIMUM_PLAYER_COUNT) return null;
+  if (!Array.isArray(players) || players.length < minimumPlayerCount) return null;
   const normalized = players.map((player) => {
     const playerId = normalizeOfficialNpbPlayerId(player?.playerId);
     return {

@@ -4,6 +4,7 @@ import { transitionV3State } from "../../backend/automation-v3/repository.js";
 import { createContestId } from "../../backend/contest-identity.js";
 import { isIsolatedTestEnvironment, validatePublishedScenario } from "./isolation.js";
 import { assertDistinctTestTeamIdentity, testTeamFixture, TEST_TEAMS, TEST_TEAM_KEYS } from "./teams.js";
+import { simulatorGameDate } from "./simu-npb/source.js";
 
 // Every request receives a separate fixture scope. No module-level mutable target can leak
 // from one team's asynchronous request into another team's game, roster, or pipeline.
@@ -293,9 +294,10 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
     }
     username = `${E2E_ADMIN_USERNAME_PREFIX}${runId}`;
     const password = secureRandomHex(32);
+    const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
     const register = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/register", {
       method: "POST",
-      headers: { Origin: origin, "Content-Type": "application/json" },
+      headers: { Origin: origin, "Content-Type": "application/json", "CF-Connecting-IP": clientIp },
       body: JSON.stringify({ username, password, passwordConfirmation: password })
     }), env, ctx);
     const registered = await register.json();
@@ -316,7 +318,7 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
     // admin authorization boundary used by scenario mutations.
     const login = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/login", {
       method: "POST",
-      headers: { Origin: origin, "Content-Type": "application/json" },
+      headers: { Origin: origin, "Content-Type": "application/json", "CF-Connecting-IP": clientIp },
       body: JSON.stringify({ username, password })
     }), env, ctx);
     const cookie = readSessionCookie(login);

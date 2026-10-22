@@ -134,6 +134,7 @@ function sharedRosterDb() {
       return {
         bind() {
           return {
+            all: async () => ({ results: [] }),
             first: async () => sql.includes("FROM games")
               ? {
                 internal_game_id: "11111111-1111-4111-8111-111111111111",
@@ -177,4 +178,20 @@ test("public取得後のshared cacheをadmin readがそのまま再利用し、�
   assert.equal(adminRoster.gameDate, publicRoster.gameDate);
   assert.equal(adminRoster.sourceOfTruth, publicRoster.sourceOfTruth);
   assert.ok(cache.keys().some((key) => key.includes("/game-day-roster/fresh")));
+});
+
+test("game-day roster source failure returns a safe fallback instead of an internal catalog error", async () => {
+  const response = await worker.fetch(new Request("https://auth.test/api/game-day-roster?internalGameId=11111111-1111-4111-8111-111111111111", {
+    headers: { Origin: "https://starting9.pages.dev" }
+  }), {
+    AUTH_ALLOWED_ORIGINS: "https://starting9.pages.dev",
+    AUTH_DB: sharedRosterDb(),
+    NPB_FETCH_WORKER: { fetch: async () => new Response("unavailable", { status: 503 }) }
+  }, { waitUntil() {} });
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.status, "pending");
+  assert.deepEqual(payload.players, []);
+  assert.notEqual(payload.code, "AUTH_API_INTERNAL_ERROR");
 });

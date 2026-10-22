@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { createTestTeamWorker } from "../tooling/test-site/worker.js";
+import { simulatorGameDate } from "../tooling/test-site/simu-npb/source.js";
 
 let requestNumber = 0;
 
@@ -86,6 +87,26 @@ test("E2E admin provisioning uses ordinary registration/login, then cleanup remo
   assert.equal(cleaned.payload.removed, true);
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM users").get().count, 0);
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
+});
+
+test("simulator schedule control reports the shared NPB fixture date", async (t) => {
+  const f = await fixture();
+  t.after(() => { f.database.close(); f.audit.close(); });
+  f.env.ENABLE_GAME_AUTOMATION_V3 = "false";
+
+  const provisioned = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
+  assert.equal(provisioned.response.status, 201);
+  const cookie = (provisioned.response.headers.get("Set-Cookie") || "").split(";", 1)[0];
+  const schedule = await f.request("/api/test/simu/schedule", { method: "POST", body: {}, cookie });
+  assert.equal(schedule.response.status, 200);
+  assert.equal(schedule.payload.date, simulatorGameDate());
+  assert.equal(schedule.payload.physicalGames.length, 0);
+
+  const cleanup = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "cleanup" }, cookie
+  });
+  assert.equal(cleanup.response.status, 200);
+  assert.equal(cleanup.payload.removed, true);
 });
 
 test("normal synthetic user cannot operate scenario controls", async (t) => {

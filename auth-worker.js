@@ -13800,10 +13800,10 @@ async function handleGetGameDayRoster(request, env, cors) {
   const targetTeam = targetTeamForEnvironment(env);
   const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: targetTeam.key }).catch(() => null);
   const refreshed = await fetchLatestPublicRoster(env, game);
+  const catalog = manualRoster?.isManualSaved === true
+    ? getManualLineupPlayerCatalog({ manualRoster, targetTeam, rosterPlayers: refreshed?.players || null })
+    : [];
   if (refreshed) {
-    const catalog = manualRoster?.isManualSaved === true
-      ? getManualLineupPlayerCatalog({ manualRoster, targetTeam, rosterPlayers: refreshed.players })
-      : [];
     const resolved = applyManualRosterToPublicRoster(refreshed, manualRoster, catalog);
     const sourceSnapshotComparison = row
       ? compareV3RosterSourceSnapshot({

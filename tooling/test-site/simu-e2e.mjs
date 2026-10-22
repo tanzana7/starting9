@@ -8,7 +8,7 @@ import fs from "node:fs";
 const SITE_ORIGIN = "https://s9simu.pages.dev";
 const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
 const RUN_MODE = String(process.env.S9SIMU_MODE || "full").trim().toLowerCase();
-assert.ok(["full", "schedule-check"].includes(RUN_MODE), "S9SIMU_MODE must be full or schedule-check");
+assert.ok(["full", "schedule-check", "sibling-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, or sibling-check");
 
 const config = JSON.parse(fs.readFileSync(new URL("../../wrangler.test-auth.jsonc", import.meta.url), "utf8"));
 assertTestAuthConfig(config);
@@ -158,7 +158,12 @@ async function advance(teamKey, internalGameId, scenario, now, expectedState) {
     last = result.payload;
     if (last?.game?.state === expectedState) return last.game;
   }
-  throw new Error(`${teamKey}/${scenario} did not reach ${expectedState}: ${last?.game?.state || "no-state"}`);
+  const jobs = await call(`/api/test/jobs${query}`, { admin: true });
+  throw new Error(`${teamKey}/${scenario} did not reach ${expectedState}: ${JSON.stringify({
+    actualState: last?.game?.state || "no-state",
+    pipelineDiagnostics: last?.pipelineDiagnostics || null,
+    jobs: jobs.payload.jobs
+  })}`);
 }
 
 async function verifyPublished(teamKey, internalGameId) {
@@ -205,6 +210,78 @@ async function fetchSimulatorSchedule({ requireFreshSync = false } = {}) {
   return physicalGames;
 }
 
+async function runSiblingCheck() {
+  let physicalGames = await fetchSimulatorSchedule();
+  let game = physicalGames.find((item) => item.game_code === "g-t-1");
+  assert.ok(game, "same-game sibling check requires the Giants/Tigers fixture");
+  let group = simulatorGroupForGame(game);
+  assert.equal(group.homeKey, "giants");
+  assert.equal(group.awayKey, "tigers");
+
+  // Reset only the one physical game under test, and only when its own contest
+  // jobs show that an earlier authorized run left state behind.
+  let hasPriorState = false;
+  for (const teamKey of [group.homeKey, group.awayKey]) {
+    const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
+    const jobs = await call(`/api/test/jobs${query}`, { admin: true });
+    const status = await call(`/api/test/status${query}`);
+    const prediction = await call(`/api/predictions/current${query}`, { admin: true });
+    hasPriorState ||= jobs.payload.jobs.length > 0
+      || Boolean(prediction.payload?.prediction)
+      || (status.payload.game?.state && status.payload.game.state !== "scheduled");
+  }
+  if (hasPriorState) {
+    const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${group.homeKey}&simuNpb=1`;
+    const cleared = await call(`/api/test/scenario${query}`, {
+      method: "POST", body: { scenario: "no-game" }, admin: true
+    });
+    assert.equal(cleared.payload.scenario, "no-game");
+    physicalGames = await fetchSimulatorSchedule();
+    game = physicalGames.find((item) => item.game_code === "g-t-1");
+    assert.ok(game);
+    group = simulatorGroupForGame(game);
+  }
+
+  for (const teamKey of [group.homeKey, group.awayKey]) await savePrediction(teamKey, game.internal_game_id);
+  const startAt = new Date(game.start_at);
+  assert.ok(Number.isFinite(startAt.getTime()));
+  const closedAt = new Date(startAt.getTime() - 59 * 60_000);
+  for (const teamKey of [group.homeKey, group.awayKey]) {
+    const closed = await advance(teamKey, game.internal_game_id, "closed", closedAt, "prediction_closed");
+    assert.equal(closed.state, "prediction_closed");
+  }
+  const control = await call("/simu-npb/control", { method: "POST", body: { lineupState: "available" } });
+  assert.equal(control.payload.lineupState, "available");
+  const postGame = new Date(startAt.getTime() + 10 * 60_000);
+
+  const first = await advance(group.homeKey, game.internal_game_id, "lineup-captured", postGame, "lineup_ready");
+  assert.equal(first.state, "lineup_ready");
+  const firstTeamStatus = await call(`/api/test/status?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${group.homeKey}`);
+  assert.equal(firstTeamStatus.payload.game.state, "lineup_ready");
+  await advance(group.homeKey, game.internal_game_id, "scored", postGame, "scored");
+  await advance(group.homeKey, game.internal_game_id, "ranked", postGame, "ranked");
+  await advance(group.homeKey, game.internal_game_id, "published", postGame, "published");
+  await verifyPublished(group.homeKey, game.internal_game_id);
+
+  const siblingBefore = await call(`/api/test/status?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${group.awayKey}`);
+  assert.equal(siblingBefore.payload.game.state, "prediction_closed", "publishing one contest leaves sibling closed");
+  const sibling = await advance(group.awayKey, game.internal_game_id, "lineup-captured", postGame, "lineup_ready");
+  assert.equal(sibling.state, "lineup_ready");
+  assert.equal(sibling.pipelineDiagnostics?.targetTeam, group.awayKey);
+  assert.equal(sibling.pipelineDiagnostics?.stateBefore, "prediction_closed");
+  assert.equal(sibling.pipelineDiagnostics?.lineupPersisted, true);
+
+  console.log(`S9SIMU_SIBLING_CHECK: ${JSON.stringify({
+    physicalGame: game.internal_game_id,
+    gameCode: game.game_code,
+    contests: [
+      { team: group.homeKey, state: "published" },
+      { team: group.awayKey, state: sibling.state }
+    ],
+    siblingIndependent: sibling.state === "lineup_ready"
+  })}`);
+}
+
 function simulatorGroupForGame(game) {
   const match = String(game.game_code || "").match(/^g-t-(\d+)$/);
   assert.ok(match, "schedule parser should preserve each simulator game code");
@@ -225,6 +302,8 @@ try {
       diagnostics: lastScheduleDiagnostics,
       physicalGames: games.map(({ game_code, internal_game_id, home_team, away_team }) => ({ game_code, internal_game_id, home_team, away_team }))
     })}`);
+  } else if (RUN_MODE === "sibling-check") {
+    await runSiblingCheck();
   } else {
   // Discover the simulator's actual canonical IDs first. Cleanup is then
   // bounded to those read-back IDs and participant contexts; never send a
@@ -325,5 +404,6 @@ if (RUN_MODE === "full") {
 } else {
   assert.equal(publishedContests, 0);
   assert.equal(temporaryUserRetained, false);
-  console.log("Completed one schedule-only diagnostic; temporary admin access was revoked.");
+  if (RUN_MODE === "schedule-check") console.log("Completed one schedule-only diagnostic; temporary admin access was revoked.");
+  else console.log("Completed one same-game sibling check; temporary admin access was revoked.");
 }

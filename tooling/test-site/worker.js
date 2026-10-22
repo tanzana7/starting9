@@ -608,6 +608,11 @@ async function runPipeline(env, { target = "published", failAt = "", stageOnly =
     const now = nowOverride ? new Date(nowOverride) : new Date();
     if (Number.isNaN(now.getTime())) throw new Error("TEST_CLOCK_INVALID");
     latest = await runGameAutomationV3(env, now, {
+      // The planner and executor must operate on the same Test Site contest.
+      // Without this claim filter, a per-team scenario can claim a sibling
+      // contest's due job for the same physical game and make its transition
+      // timing depend on which team happened to be processed first.
+      targetTeamKey: targetTeam.key,
       gameListOptions: { includeRecentHistory: true, internalGameId: INTERNAL_GAME_ID, targetTeam },
       formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, {
         disabledStages: [...disabledStages, ...stageOnlyDisabledStages],
@@ -647,6 +652,7 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false, s
   if (!allowed.has(scenario)) return jsonResponse({ ok: false, code: "INVALID_SCENARIO" }, 400);
   if (simulatorMode && scenario === "lineup-ready") return jsonResponse({ ok: false, code: "SIMULATOR_SCENARIO_UNSUPPORTED" }, 400);
   let pipelineGame = null;
+  let pipelineDiagnostics = null;
   let failureInjected = false;
   if (scenario === "no-game") {
     const cleanupScope = await deleteScenarioRows(env.AUTH_DB);
@@ -721,8 +727,24 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false, s
   }
   if (simulatorMode && ["closed", "lineup-captured", "scored", "ranked", "published"].includes(scenario)) {
     const target = scenario === "lineup-captured" ? "lineup-captured" : scenario;
+    const stateBefore = (await currentScenarioGame(env.AUTH_DB))?.state || null;
     const pipeline = await runPipeline(env, { target, stageOnly: true, nowOverride, automaticOfficialLineup: true });
     pipelineGame = pipeline.game;
+    const lineup = await env.AUTH_DB.prepare(`SELECT final_lineup_revision_id FROM game_lineups
+      WHERE internal_game_id = ?1 AND contest_id = ?2 LIMIT 1`).bind(INTERNAL_GAME_ID, CONTEST_ID).first();
+    const jobs = await env.AUTH_DB.prepare(`SELECT job_type, status FROM game_jobs_v3
+      WHERE internal_game_id = ?1 AND contest_id = ?2 ORDER BY job_type`).bind(INTERNAL_GAME_ID, CONTEST_ID).all();
+    pipelineDiagnostics = {
+      contestId: CONTEST_ID,
+      targetTeam: targetTeam.key,
+      stateBefore,
+      lineupPersisted: Boolean(lineup?.final_lineup_revision_id),
+      stateAfter: pipelineGame?.state || null,
+      claimedJobTypes: (pipeline.result?.claimReport?.claimed || []).map((job) => String(job.job_type || "")),
+      claimedContestIds: [...new Set((pipeline.result?.claimReport?.claimed || [])
+        .map((job) => String(job.contest_id || "")).filter(Boolean))],
+      jobs: (jobs.results || []).map((job) => ({ jobType: job.job_type, status: job.status }))
+    };
   }
   if (scenario === "lineup-ready") {
     await markManualLineupReadyScenario(env.AUTH_DB);
@@ -758,6 +780,7 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false, s
     if (!ready) return jsonResponse({ ok: false, code: "PUBLISHED_SCENARIO_INCOMPLETE", game: current }, 500);
   }
   return jsonResponse({ ok: true, scenario, game: current,
+    ...(pipelineDiagnostics ? { pipelineDiagnostics } : {}),
     ...(scenario === "retry" ? { failureInjected } : {}) });
 }
 

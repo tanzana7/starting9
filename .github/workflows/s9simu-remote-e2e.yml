@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - schedule-check
+          - sibling-check
           - full
         default: full
 

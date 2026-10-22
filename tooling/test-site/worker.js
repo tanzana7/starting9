@@ -785,9 +785,18 @@ async function handleTestControl(request, env, ctx) {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
     const pending = [];
     const scheduledContext = { waitUntil(promise) { pending.push(Promise.resolve(promise)); } };
+    // Keep the simulator's next-day fixture date stable across the formal
+    // scheduled event and read-back, and move only this isolated test event
+    // past the schedule check gate when a prior narrow check already ran.
+    const date = simulatorGameDate();
+    const previousCheck = await env.AUTH_DB.prepare(
+      "SELECT next_check_at FROM game_schedule_check_state WHERE schedule_date = ?1 LIMIT 1"
+    ).bind(date).first();
+    const nextCheckAt = Date.parse(String(previousCheck?.next_check_at || ""));
+    const scheduledTime = Math.max(Date.now(), Number.isFinite(nextCheckAt) ? nextCheckAt + 1000 : 0);
     await authWorker.scheduled({
       cron: "1,16,31,46 * * * *",
-      scheduledTime: Date.now()
+      scheduledTime
     }, createProductEnvironment(env), scheduledContext);
     const taskResults = await Promise.allSettled(pending);
     const failed = taskResults.find((result) => result.status === "rejected");
@@ -795,7 +804,14 @@ async function handleTestControl(request, env, ctx) {
       console.error(`[S9SIMU] formal_schedule_sync_failed code=${failed.reason?.code || "SCHEDULE_SYNC_FAILED"}`);
       return jsonResponse({ ok: false, code: "SIMULATED_SCHEDULE_SYNC_FAILED" }, 502, origin);
     }
-    const date = simulatorGameDate();
+    const scheduleExecution = taskResults
+      .filter((result) => result.status === "fulfilled")
+      .map((result) => result.value)
+      .find((value) => value?.cronMode === "schedule") || null;
+    const scheduleSync = scheduleExecution?.scheduleSync || {};
+    const fixtureSync = scheduleSync.currentDay?.date === date
+      ? scheduleSync.currentDay
+      : (scheduleSync.results || []).find((result) => result?.date === date) || null;
     const games = await env.AUTH_DB.prepare(
       `SELECT game_id, internal_game_id, game_date, start_at, home_team, away_team, game_code, game_status
          FROM detected_game_schedule WHERE game_date = ?1 ORDER BY start_at, game_id LIMIT 6`
@@ -804,7 +820,29 @@ async function handleTestControl(request, env, ctx) {
       `SELECT COUNT(*) AS count FROM game_contests WHERE internal_game_id IN
          (SELECT internal_game_id FROM detected_game_schedule WHERE game_date = ?1 LIMIT 6)`
     ).bind(date).first();
-    return jsonResponse({ ok: true, date, physicalGames: games.results || [], contestCount: Number(contests?.count || 0) }, 200, origin);
+    const physicalGames = games.results || [];
+    return jsonResponse({
+      ok: true,
+      date,
+      physicalGames,
+      contestCount: Number(contests?.count || 0),
+      scheduleDiagnostics: {
+        requestedDate: fixtureSync?.date || date,
+        requestedTeam: fixtureSync?.sourceDiagnostics?.requestedTeam || "all",
+        upstreamPath: fixtureSync?.sourceDiagnostics?.upstreamPath || null,
+        upstreamStatus: fixtureSync?.sourceDiagnostics?.upstreamStatus ?? null,
+        contentType: fixtureSync?.sourceDiagnostics?.contentType || null,
+        rawGamesCount: fixtureSync?.sourceDiagnostics?.rawGamesCount ?? null,
+        parsedGamesCount: fixtureSync?.sourceDiagnostics?.parsedGamesCount ?? null,
+        filteredGamesCount: fixtureSync?.sourceDiagnostics?.filteredGamesCount ?? null,
+        normalizedGamesCount: fixtureSync?.sourceDiagnostics?.normalizedGamesCount ?? null,
+        attemptedUpsertCount: fixtureSync?.gameCount ?? 0,
+        insertedCount: fixtureSync?.gamesInserted ?? 0,
+        updatedCount: fixtureSync?.gamesUpdated ?? 0,
+        readBackCount: physicalGames.length,
+        internalGameIds: physicalGames.map((game) => game.internal_game_id)
+      }
+    }, 200, origin);
   }
   if (url.pathname === "/api/test/status" && request.method === "GET") {
     return jsonResponse({ ok: true, game: await currentScenarioGame(env.AUTH_DB) }, 200, origin);

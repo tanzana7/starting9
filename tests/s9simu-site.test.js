@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { TEST_TEAMS, TEST_TEAM_GROUPS, TEST_TEAM_KEYS } from "../tooling/test-site/teams.js";
 import { handleSimulatedNpbRequest, simulatorGameDate } from "../tooling/test-site/simu-npb/source.js";
 import { parseSimulatorResponse, resolveNpbSource } from "../backend/npb-source-adapter.js";
+import { fetchLatestPublicRoster } from "../auth-worker.js";
 import { extractScheduleGames, extractTeamRoster } from "../cloudflare-worker.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -62,6 +63,41 @@ test("all twelve simulated rosters pass the existing NPB roster parser without c
   assert.equal(rosterSizes.size, 12);
   assert.equal(identities.size, 180);
   assert.equal(extractTeamRoster("<html>wrong team only</html>", "marines").players.length, 0);
+});
+
+test("isolated Test Site fetches its 15-player simulator roster without lowering the official-source minimum", async () => {
+  const originalFetch = globalThis.fetch;
+  const testTeam = TEST_TEAMS.giants;
+  const game = { internal_game_id: TEST_TEAM_GROUPS[0].internalGameId, game_date: simulatorGameDate() };
+  const env = {
+    ENVIRONMENT: "test",
+    TEST_SITE_ID: "starting9-isolated-v1",
+    TEST_WORKER_NAME: "starting9-test-auth",
+    TEST_AUTH_DB_ID: "7ea1fa14-ffc0-4404-8a65-5dbb8218f368",
+    TEST_AUDIT_DB_ID: "a18c6cf9-a238-4059-a5ef-784f248e225e",
+    ENABLE_DEVELOPMENT_MODE: "true",
+    TARGET_TEAM_CONTEXT: testTeam,
+    NPB_SOURCE: "simulator",
+    S9SIMU_ENABLED: "true",
+    S9SIMU_BASE_URL: "https://s9simu.example",
+    NPB_FETCH_DISABLED: "false"
+  };
+  try {
+    globalThis.fetch = async (input) => sourceRequest(new URL(input).pathname);
+    const simulated = await fetchLatestPublicRoster(env, game);
+    assert.equal(simulated?.status, "fresh");
+    assert.equal(simulated?.playerCount, 15);
+    assert.ok(simulated.players.every((player) => player.teamCode === "giants" && player.teamId === testTeam.playerTeamId));
+
+    const officialEnv = {
+      ENABLE_DEVELOPMENT_MODE: "false",
+      NPB_FETCH_WORKER: { fetch: async () => Response.json({ ok: true, players: simulated.players }) }
+    };
+    assert.equal(resolveNpbSource(officialEnv).kind, "official");
+    assert.equal(await fetchLatestPublicRoster(officialEnv, game), null, "official-source completeness still rejects a 15-player response");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("the actual NPB score-page lineup parser handles each selected team and fails closed before publication", async () => {

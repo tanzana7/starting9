@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import testSiteWorker, { createTestTeamWorker } from "../tooling/test-site/worker.js";
 import { simulatorGameDate } from "../tooling/test-site/simu-npb/source.js";
+import { TEST_TEAM_GROUPS } from "../tooling/test-site/teams.js";
 
 let requestNumber = 0;
 
@@ -143,6 +144,21 @@ test("simulator no-game cleanup removes only the requested internal game", async
   assert.equal(cleaned.payload.scenario, "no-game");
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games WHERE internal_game_id = ?").get(targetId).count, 0);
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games WHERE internal_game_id = ?").get(unrelatedId).count, 1);
+
+  const absentGroup = TEST_TEAM_GROUPS[2];
+  const absentQuery = `?internalGameId=${encodeURIComponent(absentGroup.internalGameId)}&testTeam=${absentGroup.homeKey}&simuNpb=1`;
+  const absentCleanup = await f.request(`/api/test/scenario${absentQuery}`, {
+    method: "POST", body: { scenario: "no-game" }, cookie
+  });
+  assert.equal(absentCleanup.response.status, 200);
+  assert.equal(absentCleanup.payload.scenario, "no-game");
+
+  const unknownQuery = "?internalGameId=unknown-simulator-game&testTeam=giants&simuNpb=1";
+  const unknownCleanup = await f.request(`/api/test/scenario${unknownQuery}`, {
+    method: "POST", body: { scenario: "no-game" }, cookie
+  });
+  assert.equal(unknownCleanup.response.status, 404);
+  assert.equal(unknownCleanup.payload.code, "SIMULATED_GAME_NOT_FOUND");
 
   const adminCleanup = await f.request("/api/test/e2e-admin", {
     method: "POST", body: { action: "cleanup" }, cookie

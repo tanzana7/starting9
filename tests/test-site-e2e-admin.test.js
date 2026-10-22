@@ -7,6 +7,7 @@ import testSiteWorker, { createTestTeamWorker } from "../tooling/test-site/worke
 import { classifyE2ECleanupResult } from "../tooling/test-site/cleanup-contract.js";
 import { handleSimulatedNpbRequest, simulatorGameDate } from "../tooling/test-site/simu-npb/source.js";
 import { TEST_TEAM_GROUPS, TEST_TEAMS, testPredictionPlayerId } from "../tooling/test-site/teams.js";
+import { transitionV3State } from "../backend/automation-v3/repository.js";
 
 let requestNumber = 0;
 const GITHUB_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks";
@@ -431,6 +432,143 @@ test("parsed simulator roster IDs are trusted by the same Test prediction save p
   });
   assert.equal(cleanup.response.status, 200);
   assert.equal(cleanup.payload.removed, false);
+});
+
+test("a published same-game sibling does not block the other contest's official lineup transition", async (t) => {
+  const f = await fixture();
+  const originalFetch = globalThis.fetch;
+  const simulatorState = { value: "pre-lineup" };
+  t.after(() => { globalThis.fetch = originalFetch; f.restoreFetch(); f.database.close(); f.audit.close(); });
+  f.env.S9SIMU_ENABLED = "true";
+  f.env.S9SIMU_BASE_URL = "https://s9simu.pages.dev";
+  f.env.NPB_SOURCE = "simulator";
+  f.env.ENABLE_GAME_AUTOMATION_V3 = "true";
+  f.env.ENABLE_SEMI_AUTO_LINEUP = "true";
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== "https://s9simu.pages.dev") return originalFetch(input, init);
+    return handleSimulatedNpbRequest(new Request(url, init), {
+      SIMU_NPB_STATE: {
+        async get() { return simulatorState.value; },
+        async put(_key, value) { simulatorState.value = value; }
+      }
+    }, { TEST_TEAMS, TEST_TEAM_GROUPS });
+  };
+
+  const setup = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
+  assert.equal(setup.response.status, 201);
+  const cookie = (setup.response.headers.get("Set-Cookie") || "").split(";", 1)[0];
+  const scheduled = await f.request("/api/test/simu/schedule?testTeam=fighters", {
+    method: "POST", body: {}, cookie
+  });
+  assert.equal(scheduled.response.status, 200);
+  const game = scheduled.payload.physicalGames.find((row) => row.game_code === "g-t-1");
+  assert.ok(game);
+  const contexts = [];
+  for (const teamKey of ["giants", "tigers"]) {
+    const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
+    const roster = await f.request(`/api/game-day-roster${query}`, { cookie });
+    assert.equal(roster.response.status, 200, `${teamKey}: roster`);
+    const lineup = roster.payload.players.slice(0, 9).map((player, index) => ({
+      playerId: testPredictionPlayerId(teamKey, player.uniformNumber || player.number),
+      playerName: player.name,
+      uniformNumber: player.uniformNumber || player.number,
+      teamCode: teamKey,
+      teamId: TEST_TEAMS[teamKey].playerTeamId,
+      battingOrder: index + 1,
+      position: ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"][index]
+    }));
+    const saved = await f.request(`/api/predictions/current${query}`, {
+      method: "PUT", cookie,
+      body: { internalGameId: game.internal_game_id, prediction: { schemaVersion: 1, lineup } }
+    });
+    assert.equal(saved.response.status, 200, `${teamKey}: prediction`);
+    contexts.push({ teamKey, query });
+  }
+
+  const startAt = new Date(game.start_at);
+  const closedAt = new Date(startAt.getTime() - 59 * 60_000);
+  for (const context of contexts) {
+    const closed = await f.request(`/api/test/scenario${context.query}`, {
+      method: "POST", cookie,
+      body: { scenario: "closed", stageOnly: true, now: closedAt.toISOString() }
+    });
+    assert.equal(closed.response.status, 200, `${context.teamKey}: close`);
+    assert.equal(closed.payload.game.state, "prediction_closed");
+    const contestId = f.database.prepare("SELECT contest_id FROM game_contests WHERE internal_game_id = ? AND target_team_key = ?")
+      .get(game.internal_game_id, context.teamKey).contest_id;
+    assert.ok(closed.payload.pipelineDiagnostics.claimedContestIds.every((claimed) => claimed === contestId),
+      `${context.teamKey}: close claims no sibling contest`);
+    assert.ok(f.database.prepare("SELECT 1 FROM game_jobs_v3 WHERE internal_game_id = ? AND contest_id = ? AND job_type = 'prediction_close' AND status = 'completed'")
+      .get(game.internal_game_id, contestId), `${context.teamKey}: close job is persisted to its own contest`);
+  }
+
+  simulatorState.value = "available";
+  const postGame = new Date(startAt.getTime() + 10 * 60_000);
+  async function captureUntilReady(context) {
+    let last;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      last = await f.request(`/api/test/scenario${context.query}`, {
+        method: "POST", cookie,
+        body: { scenario: "lineup-captured", stageOnly: true, now: postGame.toISOString() }
+      });
+      if (last.payload.game?.state === "lineup_ready") break;
+    }
+    assert.equal(last.response.status, 200, `${context.teamKey}: lineup capture`);
+    assert.equal(last.payload.game.state, "lineup_ready", `${context.teamKey}: formal transition`);
+    assert.equal(last.payload.pipelineDiagnostics.targetTeam, context.teamKey);
+    assert.equal(last.payload.pipelineDiagnostics.stateAfter, "lineup_ready");
+    assert.equal(last.payload.pipelineDiagnostics.lineupPersisted, true);
+    const contestId = f.database.prepare("SELECT contest_id FROM game_contests WHERE internal_game_id = ? AND target_team_key = ?")
+      .get(game.internal_game_id, context.teamKey).contest_id;
+    assert.ok(last.payload.pipelineDiagnostics.claimedContestIds.every((claimed) => claimed === contestId),
+      `${context.teamKey}: lineup pipeline claims no sibling contest`);
+    assert.ok(last.payload.pipelineDiagnostics.jobs.some((job) => job.jobType === "lineup_finalize" && job.status === "completed"));
+    return last.payload;
+  }
+
+  await captureUntilReady(contexts[0]);
+  const giantsContest = f.database.prepare("SELECT contest_id FROM game_contests WHERE internal_game_id = ? AND target_team_key = 'giants'")
+    .get(game.internal_game_id).contest_id;
+  // This test isolates whether a terminal sibling state blocks the other
+  // contest's official-lineup transition. Use the production transition
+  // primitive to arrange that state; publication artifact semantics are
+  // covered by the full formal pipeline tests in contest-formal-pipeline.
+  for (const [from, to] of [["lineup_ready", "scored"], ["scored", "ranked"], ["ranked", "published"]]) {
+    await transitionV3State(f.env.AUTH_DB, {
+      internalGameId: game.internal_game_id, contestId: giantsContest, from, to, now: postGame
+    });
+  }
+  const siblingBefore = f.database.prepare(`SELECT state FROM contest_automation_v3_state
+    WHERE internal_game_id = ? AND contest_id = (SELECT contest_id FROM game_contests
+      WHERE internal_game_id = ? AND target_team_key = 'tigers')`).get(game.internal_game_id, game.internal_game_id);
+  assert.equal(siblingBefore?.state, "prediction_closed");
+
+  const tigersCapture = await captureUntilReady(contexts[1]);
+  assert.ok(Array.isArray(tigersCapture.pipelineDiagnostics.claimedJobTypes));
+  assert.equal(f.database.prepare(`SELECT state FROM contest_automation_v3_state
+    WHERE internal_game_id = ? AND contest_id = (SELECT contest_id FROM game_contests
+      WHERE internal_game_id = ? AND target_team_key = 'giants')`).get(game.internal_game_id, game.internal_game_id)?.state, "published");
+  const tigersLineup = f.database.prepare(`SELECT revision.actual_lineup_json
+    FROM game_lineups AS current JOIN contest_lineup_revisions AS revision
+      ON revision.contest_id = current.contest_id AND revision.revision_id = current.final_lineup_revision_id
+    WHERE current.internal_game_id = ? AND current.contest_id = (SELECT contest_id FROM game_contests
+      WHERE internal_game_id = ? AND target_team_key = 'tigers')`).get(game.internal_game_id, game.internal_game_id);
+  assert.ok(JSON.parse(tigersLineup.actual_lineup_json).every((player) => player.teamCode === "tigers"));
+
+  const tigersContest = f.database.prepare("SELECT contest_id FROM game_contests WHERE internal_game_id = ? AND target_team_key = 'tigers'")
+    .get(game.internal_game_id).contest_id;
+  const beforeRetry = {
+    revisions: f.database.prepare("SELECT COUNT(*) AS count FROM contest_lineup_revisions WHERE internal_game_id = ? AND contest_id = ?")
+      .get(game.internal_game_id, tigersContest).count,
+    lineupJobs: f.database.prepare("SELECT job_type,COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ? AND contest_id = ? AND job_type IN ('lineup_fetch','lineup_finalize') GROUP BY job_type ORDER BY job_type")
+      .all(game.internal_game_id, tigersContest)
+  };
+  await captureUntilReady(contexts[1]);
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM contest_lineup_revisions WHERE internal_game_id = ? AND contest_id = ?")
+    .get(game.internal_game_id, tigersContest).count, beforeRetry.revisions, "same official lineup retry does not create a revision");
+  assert.deepEqual(f.database.prepare("SELECT job_type,COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ? AND contest_id = ? AND job_type IN ('lineup_fetch','lineup_finalize') GROUP BY job_type ORDER BY job_type")
+    .all(game.internal_game_id, tigersContest), beforeRetry.lineupJobs, "same official lineup retry does not duplicate lineup jobs");
 });
 
 test("official simulator lineups finalize through the formal pipeline for all twelve contest contexts", async (t) => {

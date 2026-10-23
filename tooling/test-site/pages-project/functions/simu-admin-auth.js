@@ -1,4 +1,12 @@
-import { resolveAuthWorkerOrigin } from "./api/[[path]].js";
+const TEST_AUTH_WORKER_ORIGIN = "https://starting9-test-auth.starting9.workers.dev";
+
+function resolveTestAuthWorkerOrigin(env) {
+  const configured = String(env?.STARTING9_AUTH_ORIGIN || "").trim().replace(/\/+$/, "");
+  return String(env?.SITE_ENVIRONMENT || "").trim().toLowerCase() === "test"
+    && configured === TEST_AUTH_WORKER_ORIGIN
+    ? TEST_AUTH_WORKER_ORIGIN
+    : null;
+}
 
 function sessionCookie(request) {
   const pair = (request.headers.get("Cookie") || "").split(";").map((part) => part.trim())
@@ -6,11 +14,11 @@ function sessionCookie(request) {
   return pair && pair.length > "s9_session=".length ? pair : "";
 }
 
-export async function authorizeTestAdmin(request, env) {
-  if (String(env.SITE_ENVIRONMENT || "").trim().toLowerCase() !== "test") {
+export async function authorizeTestAdmin(request, env = {}) {
+  if (String(env?.SITE_ENVIRONMENT || "").trim().toLowerCase() !== "test") {
     return { ok: false, code: "TEST_ENVIRONMENT_REQUIRED", status: 503 };
   }
-  const origin = resolveAuthWorkerOrigin(env);
+  const origin = resolveTestAuthWorkerOrigin(env);
   const cookie = sessionCookie(request);
   if (!origin) return { ok: false, code: "TEST_AUTH_NOT_CONFIGURED", status: 503 };
   if (!cookie) return { ok: false, code: "ADMIN_REQUIRED", status: 401 };

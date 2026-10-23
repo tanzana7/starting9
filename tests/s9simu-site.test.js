@@ -173,7 +173,7 @@ test("the generated Test Pages build includes the simulator routes but productio
   assert.doesNotMatch(productionBuilder, /simu-npb|s9simu\.pages\.dev/);
 });
 
-test("Simulated NPB portal exposes all six fixture games and twelve team pages without Starting9 controls", async () => {
+test("Simulated NPB portal exposes fixture navigation without Starting9 pipeline controls", async () => {
   const date = simulatorGameDate();
   const root = await sourceRequest("/");
   assert.equal(root.status, 200);
@@ -184,8 +184,10 @@ test("Simulated NPB portal exposes all six fixture games and twelve team pages w
   assert.equal((home.match(/class="game-card"/g) || []).length, 6);
   assert.equal((home.match(/class="team-link"/g) || []).length, 12);
   assert.doesNotMatch(home, /lineup-control|ログイン|予想する|リセット/);
-  assert.doesNotMatch(home, /Lineup Editor/);
-  assert.equal((await sourceRequest("/simu-npb/lineup-editor")).status, 404);
+  assert.match(home, /href="\/simu-npb\/lineup-editor">Lineup Editor<\/a>/);
+  const editor = await sourceRequest("/simu-npb/lineup-editor");
+  assert.equal(editor.status, 200);
+  assert.match(await editor.text(), /SIMULATED NPB · TEST DATA ONLY/);
 
   const schedule = await sourceRequest("/simu-npb/schedule");
   assert.equal(schedule.status, 200);
@@ -326,6 +328,11 @@ test("lineup writes reject missing admin/CSRF and invalid, duplicate, or cross-t
     assert.equal(response.status, status);
     assert.equal(store.state(key), null);
   };
+  const unknownGame = await sourceRequest("/simu-npb/api/lineups/not-a-game", {
+    method: "PUT", body: { ...good, providerGameId: "not-a-game" }, store
+  });
+  assert.equal(unknownGame.status, 404);
+  assert.equal(store.state(key), null);
   await deny(401, { authorizeAdmin: async () => ({ ok: false, code: "ADMIN_REQUIRED", status: 401 }) });
   await deny(403, { headers: { "X-Simu-NPB-Write": "" } });
 

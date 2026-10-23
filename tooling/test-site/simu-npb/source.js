@@ -225,7 +225,7 @@ async function saveLineups(request, env, game, teams, authorizeAdmin) {
   try {
     // One game-scoped KV value keeps both sides atomic and avoids game/team
     // selections racing into a shared mutable lineup slot.
-    await env.SIMU_NPB_STATE.put(lineupKey(game), JSON.stringify(stored), { expirationTtl: 90 * 24 * 60 * 60 });
+    await env.SIMU_NPB_STATE.put(lineupKey(game), JSON.stringify(stored));
   } catch {
     return Response.json({ ok: false, code: "SIMULATOR_STATE_UNAVAILABLE" }, { status: 503, headers: { "Cache-Control": "no-store" } });
   }

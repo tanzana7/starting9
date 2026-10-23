@@ -2,11 +2,11 @@
 
 ## Purpose
 
-`s9simu.pages.dev` is an isolated simulated NPB source site. Its root, schedule, team, and game pages render the same six-game, twelve-team fixture used by the machine-readable schedule and existing parser-compatible roster/lineup pages. The former Starting9 Test public UI remains available at `/starting9/`; API, admin, and E2E routes remain unchanged. The site must not use production records.
+`s9simu.pages.dev` is the public Simulated NPB source site. Its root, schedule, team, and game pages render the same six-game, twelve-team fixture used by the machine-readable schedule and existing parser-compatible roster/lineup pages. The duplicate Starting9 Test frontend is not published; `starting9-app.pages.dev` is the only public Starting9 UI. Test Worker, Test D1, API, simulator admin endpoint, fixtures, and E2E tooling remain isolated and are not production data sources.
 
 ## Resource boundary
 
-- Pages project: `starting9-test`; all remote Pages commands must use the explicit `starting9-target` Wrangler profile (Pages config does not support an `account_id` field).
+- Pages project: `s9simu`; all remote Pages commands must use the explicit `starting9-target` Wrangler profile (Pages config does not support an `account_id` field).
 - Auth Worker: `starting9-test-auth`, entrypoint `tooling/test-site/worker.js`.
 - Databases: `starting9-test-auth-db` and `starting9-test-audit-db`.
 - The test Worker has no Cron triggers and no service bindings. External NPB fetching is disabled.
@@ -16,7 +16,7 @@
 
 ## Synthetic scenario controls
 
-The human-facing source site is read-only and has no Starting9 login or pipeline controls. `/simu-npb/control` remains a test-only endpoint used by the existing authorized E2E workflow; it is not linked from the public source pages. The parser-facing NPB-shaped schedule, roster, and lineup endpoints remain unchanged.
+The public schedule/team/source pages are read-only; the separately authorized Lineup Editor may update only synthetic lineup state. The site has no Starting9 login or scoring-pipeline UI. The scenario-control page and its client source remain in the repository for isolated development/CI, but are not copied to the public Pages artifact. `/simu-npb/control` remains a test-only endpoint used by the existing authorized E2E workflow; it is not linked from the public source pages. The parser-facing NPB-shaped schedule, roster, and lineup endpoints remain unchanged.
 
 `node tooling/test-site/simu-e2e.mjs` runs the deployed 12-team simulator flow only from the manually dispatched `S9simu Remote E2E` workflow on `main`. The workflow requests a short-lived GitHub Actions OIDC token with audience `starting9-simu-e2e`; the Test Worker verifies GitHub's signature and pins the repository ID, main ref, workflow path, event type, and token time window before creating a run-derived, one-time E2E admin identity. A duplicate workflow proof is rejected by the reserved identity's unique username. The issued admin session expires after 30 minutes and is revoked during cleanup. Successful runs retain only the demoted ranking identity; failed runs retain a disabled replay marker until the OIDC proof expires, then the next authorized run removes that expired marker. No persistent setup secret, Cloudflare credential, or production account is used by the workflow.
 
@@ -42,6 +42,6 @@ The fixture contains six deterministic physical games, pairing all twelve canoni
 
 ## Build, validate, and deploy
 
-Build static assets with `node tooling/test-site/build-pages.mjs`. Test-only scenario files are sourced from `tooling/test-site/static/`, while shared public assets come from the common Pages asset manifest. Validate the test Worker with `npx wrangler deploy --dry-run --config wrangler.test-auth.jsonc --profile starting9-target`; deploy only with that exact config and profile. The build creates the Pages project root at `dist/test-site-project`, with its config and Pages Function proxy, and public files at `dist/test-site`. Run Pages commands with `--cwd dist/test-site-project --profile starting9-target`. Never omit the profile, and do not run `tooling/production-deploy.cjs` for test resources.
+Build static assets with `node tooling/test-site/build-pages.mjs`. The public artifact contains only the Simulated NPB route manifest and simulator styles/editor asset; its Pages Functions and isolated APIs are assembled separately under `dist/test-site-project`. Starting9 app files and private scenario-control UI sources are not published. Validate the test Worker with `npx wrangler deploy --dry-run --config wrangler.test-auth.jsonc --profile starting9-target`; deploy only with that exact config and profile. The build creates the Pages project root at `dist/test-site-project`, with its config and Pages Function proxy, and public files at `dist/test-site`. Run Pages commands with `--cwd dist/test-site-project --profile starting9-target`. Never omit the profile, and do not run `tooling/production-deploy.cjs` for test resources.
 
 Apply the repository's existing Auth and Audit migrations only to the two test D1s, using the explicit test Worker config and `starting9-target` profile. Do not run source-account commands or production configs during setup.

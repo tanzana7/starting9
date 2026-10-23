@@ -184,15 +184,15 @@ test("starter parser, controls and unknown routes remain bounded and test-only",
   assert.equal(resolveNpbSource({ NPB_SOURCE: "simulator", ENVIRONMENT: "production", ENABLE_DEVELOPMENT_MODE: "false" }).kind, "official");
 });
 
-test("the generated Test Pages build includes the simulator routes but production Pages does not", async () => {
+test("the generated Simulated NPB build owns simulator routes without cloning the Starting9 app", async () => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const builder = fs.readFileSync(path.join(root, "tooling/test-site/build-pages.mjs"), "utf8");
   const productionBuilder = fs.readFileSync(path.join(root, "tooling/production-pages/build.mjs"), "utf8");
   const productionRoutes = JSON.parse(fs.readFileSync(path.join(root, "_routes.json"), "utf8"));
   assert.match(builder, /simu-npb/);
-  assert.match(builder, /s9simu\.pages\.dev/);
   assert.match(builder, /routeManifest\.include/);
   assert.match(builder, /simulatorSourceDirectory, "rosters\.js"/);
+  assert.doesNotMatch(builder, /TEST_SITE_PAGE_FILES|SHARED_PAGE_DIRECTORIES|starting9AppDirectory|test-environment\.css/);
   assert.equal(productionRoutes.include.includes("/simu-npb/*"), false);
   assert.doesNotMatch(productionBuilder, /simu-npb|s9simu\.pages\.dev/);
 });
@@ -212,6 +212,7 @@ test("Simulated NPB portal exposes fixture navigation without Starting9 pipeline
   const editor = await sourceRequest("/simu-npb/lineup-editor");
   assert.equal(editor.status, 200);
   assert.match(await editor.text(), /SIMULATED NPB · TEST DATA ONLY/);
+  assert.equal((await sourceRequest("/starting9/")).status, 404);
 
   const schedule = await sourceRequest("/simu-npb/schedule");
   assert.equal(schedule.status, 200);

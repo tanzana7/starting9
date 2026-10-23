@@ -25,7 +25,7 @@ function readArtifact(directory, file) {
   return fs.readFileSync(path.join(directory, file), "utf8");
 }
 
-test("production Pages artifact excludes Test Site controls and preserves production assets", () => {
+test("production Pages artifact contains only the production Starting9 frontend", () => {
   build("tooling/production-pages/build.mjs");
   const files = listFiles(productionOutput);
   assert.equal(files.includes("test-scenarios.html"), false);
@@ -47,59 +47,45 @@ test("production Pages artifact excludes Test Site controls and preserves produc
   assert.doesNotMatch(productionTeamBootstrap, /testTeam|Starting9TestTeam/);
   assert.equal(files.some((file) => /real-team-pilot|test-site/i.test(file)), false);
 
-  const forbidden = [/test-scenarios\.html/i, /scenario-controls\.js/i, /\/api\/test\//i, /TEST ENVIRONMENT/i, /Starting9TestTeam/];
+  const forbidden = [/test-scenarios\.html/i, /scenario-controls\.js/i, /\/api\/test\//i, /TEST ENVIRONMENT/i, /Starting9TestTeam/, /\/simu-npb\//i, /s9simu\.pages\.dev/i];
   for (const file of files) {
     const content = readArtifact(productionOutput, file);
     for (const pattern of forbidden) assert.doesNotMatch(content, pattern, `${file} contains ${pattern}`);
   }
 });
 
-test("Test Site Pages artifact retains scenario UI, controls, banner, and shared app assets", () => {
+test("Simulated NPB Pages artifact excludes the duplicate Starting9 frontend and keeps its isolated functions", () => {
   fs.mkdirSync(testOutput, { recursive: true });
   fs.writeFileSync(path.join(testOutput, "stale-production-asset.html"), "must not survive an allowlisted build");
+  fs.mkdirSync(path.join(testOutput, "starting9"), { recursive: true });
+  fs.writeFileSync(path.join(testOutput, "starting9", "index.html"), "old Starting9 Test UI");
   fs.mkdirSync(path.join(testOutput, "functions", "api"), { recursive: true });
   fs.writeFileSync(path.join(testOutput, "functions", "api", "stale-proxy.js"), "must not be uploaded");
   build("tooling/test-site/build-pages.mjs");
   const files = listFiles(testOutput);
   assert.equal(files.includes("stale-production-asset.html"), false);
   assert.equal(files.some((file) => file.startsWith("functions/")), false);
-  for (const forbidden of ["contact.html", "fighters-player-master.js", "game-schedule-2026.json", "game-schedule.js", "_headers", "_redirects"]) {
-    assert.equal(files.includes(forbidden), false, `Test Site artifact must exclude ${forbidden}`);
+  for (const forbidden of [
+    "contact.html", "fighters-player-master.js", "game-schedule-2026.json", "game-schedule.js",
+    "_headers", "_redirects", "index.html", "starting9/index.html", "test-scenarios.html",
+    "scenario-controls.js", "script.js", "style.css", "auth.js", "players.js",
+    "test-environment.css", "frontend/shared/team-context.js", "frontend/shared/site-context.js"
+  ]) {
+    assert.equal(files.includes(forbidden), false, `Simulated NPB artifact must exclude ${forbidden}`);
   }
-  assert.ok(files.includes("test-scenarios.html"));
-  assert.ok(files.includes("scenario-controls.js"));
-  assert.ok(files.includes("index.html"));
-  assert.ok(files.includes("starting9/index.html"));
   assert.ok(files.includes("assets/simu-npb.css"));
   assert.ok(files.includes("assets/simu-npb-lineup-editor.js"));
-  assert.ok(files.includes("script.js"));
-  assert.ok(files.includes("style.css"));
-  assert.ok(files.includes("test-environment.css"));
-  assert.ok(files.includes("assets/starting9-header.png"));
-  assert.ok(files.includes("assets/icons/icon-512.png"));
-  assert.ok(files.includes("frontend/shared/team-context.js"));
-  assert.ok(files.includes("frontend/shared/production-team.js"));
-  assert.ok(files.includes("frontend/shared/site-context.js"));
-  assert.match(readArtifact(testOutput, "test-scenarios.html"), /Scenario/i);
-  assert.match(readArtifact(testOutput, "scenario-controls.js"), /\/api\/test\/scenario/);
-  assert.match(readArtifact(testOutput, "index.html"), /TEST ENVIRONMENT/);
-  assert.match(readArtifact(testOutput, "index.html"), /test-environment\.css/);
-  assert.match(readArtifact(testOutput, "index.html"), /frontend\/shared\/site-context\.js/);
-  assert.match(readArtifact(testOutput, "starting9/index.html"), /<base href="\/">/);
+  assert.ok(files.includes("_routes.json"));
+  assert.match(readArtifact(testOutput, "assets/simu-npb.css"), /\.test-notice/);
+  assert.match(readArtifact(testOutput, "assets/simu-npb-lineup-editor.js"), /lineup/i);
   assert.equal(JSON.parse(readArtifact(testOutput, "_routes.json")).include.includes("/"), true);
-  assert.doesNotMatch(readArtifact(testOutput, "index.html"), /testTeamSelector/);
-  assert.equal(
-    readArtifact(testOutput, "frontend/shared/production-team.js"),
-    fs.readFileSync(path.join(root, "frontend/shared/production-team.js"), "utf8"),
-    "Test Site must reuse the unmodified Production team selector and theme bootstrap"
-  );
-  assert.equal(readArtifact(testOutput, "style.css"), fs.readFileSync(path.join(root, "style.css"), "utf8"));
-  assert.match(readArtifact(testOutput, "frontend/shared/site-context.js"), /s9_test_source=simu-npb/);
-  assert.doesNotMatch(readArtifact(testOutput, "script.js"), /https:\/\/starting9-app\.pages\.dev/);
+  assert.deepEqual(files.sort(), ["_routes.json", "assets/simu-npb-lineup-editor.js", "assets/simu-npb.css"]);
   const generatedPagesProject = path.join(root, "dist", "test-site-project");
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "api", "[[path]].js")));
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "simu-npb", "[[path]].js")));
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "simu-admin-auth.js")));
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "index.js")));
+  assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "simu-npb", "source.js")));
+  assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "simu-npb", "rosters.js")));
   assert.equal(JSON.parse(readArtifact(generatedPagesProject, "wrangler.jsonc")).pages_build_output_dir, "../test-site");
 });

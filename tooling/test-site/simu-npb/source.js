@@ -6,6 +6,10 @@ export function simulatorGameDate(now = new Date()) {
   return `${jst.getUTCFullYear()}-${String(jst.getUTCMonth() + 1).padStart(2, "0")}-${String(jst.getUTCDate()).padStart(2, "0")}`;
 }
 
+function testOnlyNotice() {
+  return `<p>SIMULATED NPB · TEST DATA ONLY</p>`;
+}
+
 export function simulatorGames(date, teams, groups) {
   return groups.map((group, index) => ({
     gameDate: date,
@@ -72,10 +76,11 @@ function scheduleTable(date, teams, groups) {
 
 function npbSchedulePage(date, teams, groups) {
   const [, year, month, day] = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  // Keep the legacy NPB-shaped document unchanged for the production parser;
-  // the human-facing schedule is a separate view over the same fixture rows.
+  // The parser keys off the schedule table; keep the test-only notice outside
+  // that structure so humans can identify the synthetic source without changing
+  // the existing Starting9 ingestion contract.
   const games = date === simulatorGameDate() ? simulatorGames(date, teams, groups) : [];
-  return `<!doctype html><html lang="ja"><meta charset="utf-8"><title>試合日程 | S9simu NPB</title><h1>試合日程</h1><p>${year}年 ${Number(month)}/${Number(day)} · 合成データ</p><table><thead><tr><th>日付</th><th>対戦</th><th>開始</th><th>球場</th></tr></thead><tbody>${games.map((game) => `<tr><td>${Number(month)}/${Number(day)}</td><td>${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}</td><td>18:00</td><td>${escapeHtml(game.venue)}<a href="/scores/${year}/${month}${day}/${game.npbGameCode}/">試合</a></td></tr>`).join("")}</tbody></table></html>`;
+  return `<!doctype html><html lang="ja"><meta charset="utf-8"><title>試合日程 | S9simu NPB</title><body>${testOnlyNotice()}<h1>試合日程</h1><p>${year}年 ${Number(month)}/${Number(day)} · 合成データ</p><table><thead><tr><th>日付</th><th>対戦</th><th>開始</th><th>球場</th></tr></thead><tbody>${games.map((game) => `<tr><td>${Number(month)}/${Number(day)}</td><td>${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}</td><td>18:00</td><td>${escapeHtml(game.venue)}<a href="/scores/${year}/${month}${day}/${game.npbGameCode}/">試合</a></td></tr>`).join("")}</tbody></table></body></html>`;
 }
 
 function homePage(date, teams, groups) {
@@ -113,14 +118,14 @@ function gamePage(game, teams, available) {
 
 function starterPage(date, teams, groups) {
   const games = simulatorGames(date, teams, groups);
-  return `<!doctype html><html lang="ja"><meta charset="utf-8"><title>予告先発 | S9simu NPB</title><h1>予告先発</h1><h4>${Number(date.slice(5, 7))}月 ${Number(date.slice(8, 10))}日 ${date.slice(0, 4)}</h4><section>${games.map((game, index) => `<div class="unit cl_${index + 1}"><div class="team_left"><img alt="${escapeHtml(game.homeTeam)}"><span>${escapeHtml(`テスト ${teams[game.homeKey].shortName} 先発`)}</span></div><div class="team_right"><img alt="${escapeHtml(game.awayTeam)}"><span>${escapeHtml(`テスト ${teams[game.awayKey].shortName} 先発`)}</span></div><div class="info">18:00 （S9simu球場）</div></div>`).join("")}</section></html>`;
+  return `<!doctype html><html lang="ja"><meta charset="utf-8"><title>予告先発 | S9simu NPB</title><body>${testOnlyNotice()}<h1>予告先発</h1><h4>${Number(date.slice(5, 7))}月 ${Number(date.slice(8, 10))}日 ${date.slice(0, 4)}</h4><section>${games.map((game, index) => `<div class="unit cl_${index + 1}"><div class="team_left"><img alt="${escapeHtml(game.homeTeam)}"><span>${escapeHtml(`テスト ${teams[game.homeKey].shortName} 先発`)}</span></div><div class="team_right"><img alt="${escapeHtml(game.awayTeam)}"><span>${escapeHtml(`テスト ${teams[game.awayKey].shortName} 先発`)}</div><div class="info">18:00 （S9simu球場）</div></div>`).join("")}</section></body></html>`;
 }
 
 function lineupPage(game, teamKey, available, teams) {
   const team = teams[teamKey];
   const players = simulatorRoster(teamKey, teams);
   const rows = available ? players.slice(0, 9).map((player, index) => `<tr><td>${index + 1}</td><td>${POSITION_SEQUENCE[index]}</td><td>${escapeHtml(player.name)}</td></tr>`).join("") : "";
-  return `<!doctype html><html lang="ja"><meta charset="utf-8"><title>試合速報・オーダー | S9simu NPB</title><h1>最新のオーダー</h1><div data-game-code="${game.npbGameCode}" data-game-date="${game.gameDate}" data-home-team="${game.homeTeam}" data-away-team="${game.awayTeam}" data-game-status="scheduled" data-start-at="${game.startAt}"><h5>${escapeHtml(team.displayName)}</h5><table data-lineup-team="${teamKey}"><thead><tr><th>打順</th><th>守備</th><th>選手名</th></tr></thead><tbody>${rows}</tbody></table>${available ? "" : "<p>スタメン未発表</p>"}</div></html>`;
+  return `<!doctype html><html lang="ja"><meta charset="utf-8"><title>試合速報・オーダー | S9simu NPB</title><body>${testOnlyNotice()}<h1>最新のオーダー</h1><div data-game-code="${game.npbGameCode}" data-game-date="${game.gameDate}" data-home-team="${game.homeTeam}" data-away-team="${game.awayTeam}" data-game-status="scheduled" data-start-at="${game.startAt}"><h5>${escapeHtml(team.displayName)}</h5><table data-lineup-team="${teamKey}"><thead><tr><th>打順</th><th>守備</th><th>選手名</th></tr></thead><tbody>${rows}</tbody></table>${available ? "" : "<p>スタメン未発表</p>"}</div></body></html>`;
 }
 
 export async function handleSimulatedNpbRequest(request, env = {}, { TEST_TEAMS, TEST_TEAM_GROUPS } = {}) {

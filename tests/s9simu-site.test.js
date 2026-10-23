@@ -33,6 +33,7 @@ test("simulated NPB schedule passes the existing official schedule parser for si
   const page = await sourceRequest(`/simu-npb/games/${year}/schedule_${month}_detail.html?date=${date}&team=all`);
   assert.equal(page.status, 200);
   const html = await page.text();
+  assert.match(html, /SIMULATED NPB · TEST DATA ONLY/);
   const parsed = extractScheduleGames(html, date);
   assert.equal(parsed.length, 6);
   assert.equal(new Set(parsed.flatMap((game) => [game.homeTeam, game.awayTeam])).size, 12);
@@ -106,11 +107,13 @@ test("the actual NPB score-page lineup parser handles each selected team and fai
   const [, year, month, day] = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   const path = `/simu-npb/scores/${year}/${month}${day}/${game.npbGameCode}/?team=${game.homeKey}`;
   const preLineup = await sourceRequest(path);
+  assert.match(await preLineup.clone().text(), /SIMULATED NPB · TEST DATA ONLY/);
   const notPublished = await parseSimulatorResponse(preLineup, { mode: "lineup", team: game.homeKey });
   assert.equal(notPublished.ok, false);
   assert.equal(notPublished.code, "LINEUP_NOT_PUBLISHED");
 
   const availablePage = await sourceRequest(path, { state: "available" });
+  assert.match(await availablePage.clone().text(), /SIMULATED NPB · TEST DATA ONLY/);
   const available = await parseSimulatorResponse(availablePage, { mode: "lineup", team: game.homeKey });
   assert.equal(available.ok, true);
   assert.equal(available.payload.lineup.length, 9);
@@ -125,7 +128,9 @@ test("the actual NPB score-page lineup parser handles each selected team and fai
 
 test("starter parser, controls and unknown routes remain bounded and test-only", async () => {
   const date = simulatorGameDate();
-  const starter = await parseSimulatorResponse(await sourceRequest("/simu-npb/announcement/starter/"), { mode: "starter" });
+  const starterResponse = await sourceRequest("/simu-npb/announcement/starter/");
+  assert.match(await starterResponse.clone().text(), /SIMULATED NPB · TEST DATA ONLY/);
+  const starter = await parseSimulatorResponse(starterResponse, { mode: "starter" });
   assert.equal(starter.ok, true);
   assert.equal(starter.payload.games.length, 6);
   assert.equal(starter.payload.date, date);
@@ -161,6 +166,8 @@ test("Simulated NPB portal exposes all six fixture games and twelve team pages w
   assert.equal((home.match(/class="game-card"/g) || []).length, 6);
   assert.equal((home.match(/class="team-link"/g) || []).length, 12);
   assert.doesNotMatch(home, /lineup-control|ログイン|予想する|リセット/);
+  assert.doesNotMatch(home, /Lineup Editor/);
+  assert.equal((await sourceRequest("/simu-npb/lineup-editor")).status, 404);
 
   const schedule = await sourceRequest("/simu-npb/schedule");
   assert.equal(schedule.status, 200);

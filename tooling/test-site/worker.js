@@ -320,17 +320,6 @@ function withSessionExpiry(setCookie, expiresAt) {
     .replace(/Expires=[^;]+/i, `Expires=${expiresAt.toUTCString()}`);
 }
 
-async function removeExpiredE2ERunMarkers(db, now) {
-  // Failed runs retain a disabled reserved-name row until the GitHub OIDC
-  // proof expires. Keeping this unique username temporarily prevents replay
-  // even if cleanup happens before the proof's short expiry window.
-  await db.prepare(`DELETE FROM users
-    WHERE status = 'disabled' AND role = 'user' AND updated_at <= ?1
-      AND length(username) = 16 AND substr(username, 1, 4) = 'e2e-'
-      AND substr(username, 5) NOT GLOB '*[^0-9a-f]*'`)
-    .bind(now.toISOString()).run();
-}
-
 async function removeE2EAdmin(env, userId, username) {
   if (!/^e2e-[a-f0-9]{12}$/.test(username)) return false;
   const result = await env.AUTH_DB.prepare(
@@ -341,7 +330,6 @@ async function removeE2EAdmin(env, userId, username) {
 
 function classifyE2EAdminProvisionFailure(stage, error) {
   const stageCodes = {
-    expired_marker_cleanup: "E2E_MARKER_CLEANUP_FAILED",
     existing_identity_lookup: "E2E_IDENTITY_LOOKUP_FAILED",
     register_request: "E2E_REGISTER_FAILED",
     register_response: "E2E_REGISTER_RESPONSE_FAILED",
@@ -391,7 +379,7 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
   const match = authorization.match(/^Bearer ([A-Za-z0-9._~-]+)$/);
   if (!match) return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
   let runIdentity;
-  let stage = "expired_marker_cleanup";
+  let stage = "existing_identity_lookup";
   try {
     runIdentity = await verifyS9SimuRunToken(match[1]);
   } catch (error) {
@@ -402,10 +390,11 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
     if (String(input?.runId || "") !== runIdentity.runId) {
       return jsonResponse({ ok: false, code: "E2E_RUN_MISMATCH" }, 403, origin);
     }
-    const now = new Date();
-    await removeExpiredE2ERunMarkers(env.AUTH_DB, now);
+    // Disabled replay tombstones are also durable user identities referenced by
+    // historical test records. OIDC expiry already makes their proofs unusable;
+    // never hard-delete them here, because D1 restricts deletion when those
+    // records retain the identity and cascading would erase other history.
     username = runIdentity.username;
-    stage = "existing_identity_lookup";
     const previousRun = await env.AUTH_DB.prepare(
       "SELECT id FROM users WHERE username_normalized = ?1 LIMIT 1"
     ).bind(username).first();

@@ -117,6 +117,7 @@ fs.cpSync(path.join(root, "functions"), path.join(pagesProject, "functions"), { 
 const simulatorFunctionOutput = path.join(pagesProject, "functions", "simu-npb");
 fs.mkdirSync(simulatorFunctionOutput, { recursive: true });
 fs.copyFileSync(path.join(simulatorSourceDirectory, "source.js"), path.join(simulatorFunctionOutput, "source.js"));
+fs.copyFileSync(path.join(simulatorSourceDirectory, "rosters.js"), path.join(simulatorFunctionOutput, "rosters.js"));
 fs.copyFileSync(path.join(simulatorFunctionsDirectory, "[[path]].js"), path.join(simulatorFunctionOutput, "[[path]].js"));
 fs.copyFileSync(path.join(simulatorFunctionsDirectory, "..", "index.js"), path.join(pagesProject, "functions", "index.js"));
 fs.copyFileSync(path.join(simulatorFunctionsDirectory, "..", "simu-admin-auth.js"), path.join(pagesProject, "functions", "simu-admin-auth.js"));

@@ -59,10 +59,31 @@ test("all twelve simulated rosters pass the existing NPB roster parser without c
   const rosterSizes = new Map();
   const identities = new Set();
   for (const teamKey of TEST_TEAM_KEYS) {
+    const fixtureRoster = simulatorRoster(teamKey, TEST_TEAMS);
     const response = await sourceRequest(`/simu-npb/announcement/roster/${teamKey}/`);
     assert.equal(response.status, 200);
     const parsed = extractTeamRoster(await response.text(), teamKey);
     assert.equal(parsed.players.length, 15, teamKey);
+    assert.deepEqual(parsed.players.map((player) => ({
+      playerId: player.playerId,
+      name: player.name,
+      number: player.number,
+      position: player.position
+    })), fixtureRoster.map((player) => ({
+      playerId: player.playerId,
+      name: player.name.replace(/[\s\u3000]/g, ""),
+      number: player.number,
+      position: player.position
+    })), teamKey);
+    assert.equal(new Set(fixtureRoster.map((player) => player.name)).size, 15, `${teamKey}: duplicate name`);
+    assert.ok(fixtureRoster.every((player) => !/^(?:player|batter)\s*\d+$/i.test(player.name)
+      && !/^選手\s*\d+$/.test(player.name)), `${teamKey}: placeholder name remains`);
+    assert.deepEqual(fixtureRoster.reduce((counts, player) => {
+      counts[player.position] = (counts[player.position] || 0) + 1;
+      return counts;
+    }, {}), { 捕手: 2, 内野手: 5, 外野手: 5, 投手: 3 }, `${teamKey}: roster composition`);
+    assert.deepEqual(fixtureRoster.map((player) => player.playerId), Array.from({ length: 15 }, (_, index) =>
+      `npb:${String(90000001 + TEST_TEAM_KEYS.indexOf(teamKey) * 100 + index)}`), `${teamKey}: stable simulator IDs`);
     for (const player of parsed.players) {
       assert.ok(player.playerId?.startsWith("npb:"));
       assert.ok(!identities.has(player.playerId), `duplicate simulator player identity ${player.playerId}`);
@@ -126,12 +147,14 @@ test("the actual NPB score-page lineup parser handles each selected team and fai
   const available = await parseSimulatorResponse(availablePage, { mode: "lineup", team: game.homeKey });
   assert.equal(available.ok, true);
   assert.equal(available.payload.lineup.length, 9);
-  assert.ok(available.payload.lineup.every((player) => player.playerName.includes(TEST_TEAMS[game.homeKey].shortName)));
+  assert.deepEqual(available.payload.lineup.map((player) => player.playerName), simulatorRoster(game.homeKey, TEST_TEAMS)
+    .slice(0, 9).map((player) => player.name.replace(/[\s\u3000]/g, "")));
 
   const awayResponse = await sourceRequest(path.replace(`team=${game.homeKey}`, `team=${game.awayKey}`), { state: "available" });
   const away = await parseSimulatorResponse(awayResponse, { mode: "lineup", team: game.awayKey });
   assert.equal(away.ok, true);
-  assert.ok(away.payload.lineup.every((player) => player.playerName.includes(TEST_TEAMS[game.awayKey].shortName)));
+  assert.deepEqual(away.payload.lineup.map((player) => player.playerName), simulatorRoster(game.awayKey, TEST_TEAMS)
+    .slice(0, 9).map((player) => player.name.replace(/[\s\u3000]/g, "")));
   assert.notEqual(available.payload.lineup[0].playerName, away.payload.lineup[0].playerName);
 });
 
@@ -169,6 +192,7 @@ test("the generated Test Pages build includes the simulator routes but productio
   assert.match(builder, /simu-npb/);
   assert.match(builder, /s9simu\.pages\.dev/);
   assert.match(builder, /routeManifest\.include/);
+  assert.match(builder, /simulatorSourceDirectory, "rosters\.js"/);
   assert.equal(productionRoutes.include.includes("/simu-npb/*"), false);
   assert.doesNotMatch(productionBuilder, /simu-npb|s9simu\.pages\.dev/);
 });
@@ -239,7 +263,8 @@ test("Simulated NPB game detail renders both fixture lineups and keeps the parse
     const parsed = await parseSimulatorResponse(await sourceRequest(path, { state: "available" }), { mode: "lineup", team: teamKey });
     assert.equal(parsed.ok, true, teamKey);
     assert.equal(parsed.payload.lineup.length, 9, teamKey);
-    assert.ok(parsed.payload.lineup.every((player) => player.playerName.includes(TEST_TEAMS[teamKey].shortName)));
+    assert.deepEqual(parsed.payload.lineup.map((player) => player.playerName), simulatorRoster(teamKey, TEST_TEAMS)
+      .slice(0, 9).map((player) => player.name.replace(/[\s\u3000]/g, "")));
   }
 });
 
@@ -264,8 +289,12 @@ test("lineup editor exposes six games with each side's own roster and nine persi
     assert.equal(home.roster.length, 15);
     assert.deepEqual(away.roster.map((player) => player.playerId), simulatorRoster(game.awayKey, TEST_TEAMS).map((player) => player.playerId));
     assert.deepEqual(home.roster.map((player) => player.playerId), simulatorRoster(game.homeKey, TEST_TEAMS).map((player) => player.playerId));
+    assert.deepEqual(away.roster.map(({ playerId, name, number }) => ({ playerId, name, number })), simulatorRoster(game.awayKey, TEST_TEAMS).map(({ playerId, name, number }) => ({ playerId, name, number })));
+    assert.deepEqual(home.roster.map(({ playerId, name, number }) => ({ playerId, name, number })), simulatorRoster(game.homeKey, TEST_TEAMS).map(({ playerId, name, number }) => ({ playerId, name, number })));
     assert.deepEqual(away.lineup.map((row) => row.order), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
     assert.deepEqual(home.lineup.map((row) => row.order), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert.ok(away.lineup.every((row) => away.roster.some((player) => player.playerId === row.playerId)));
+    assert.ok(home.lineup.every((row) => home.roster.some((player) => player.playerId === row.playerId)));
   }
 });
 

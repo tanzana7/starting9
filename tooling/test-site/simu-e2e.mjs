@@ -208,7 +208,11 @@ async function advance(teamKey, internalGameId, scenario, now, expectedState) {
     last = result.payload;
     if (last?.pipelineDiagnostics) pipelineDiagnosticsHistory.push(last.pipelineDiagnostics);
     if (last?.game?.state === expectedState) {
-      return { ...last.game, pipelineDiagnosticsHistory };
+      return {
+        ...last.game,
+        pipelineDiagnostics: last.pipelineDiagnostics || null,
+        pipelineDiagnosticsHistory
+      };
     }
   }
   const jobs = await call(`/api/test/jobs${query}`, { admin: true });

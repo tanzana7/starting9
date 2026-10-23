@@ -1,4 +1,6 @@
 const POSITION_SEQUENCE = Object.freeze(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
+const LINEUP_KEY_PREFIX = "lineup:v1:";
+const LINEUP_MAX_BODY_BYTES = 16 * 1024;
 
 export function simulatorGameDate(now = new Date()) {
   const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
@@ -53,7 +55,7 @@ function rosterTable(teamKey, teams) {
 }
 
 function pageShell(title, content) {
-  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>${escapeHtml(title)} | Simulated NPB</title><link rel="stylesheet" href="/assets/simu-npb.css"></head><body><div class="test-notice">SIMULATED NPB · TEST DATA ONLY</div><header class="site-header"><a class="brand" href="/">Simulated NPB</a><nav aria-label="メインナビゲーション"><a href="/">Home</a><a href="/simu-npb/schedule">Schedule</a><a href="/simu-npb/teams">Teams</a></nav></header><main>${content}</main><footer>Starting9 test source · Synthetic fixture data</footer></body></html>`;
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>${escapeHtml(title)} | Simulated NPB</title><link rel="stylesheet" href="/assets/simu-npb.css"></head><body><div class="test-notice">SIMULATED NPB · TEST DATA ONLY</div><header class="site-header"><a class="brand" href="/">Simulated NPB</a><nav aria-label="メインナビゲーション"><a href="/">Home</a><a href="/simu-npb/schedule">Schedule</a><a href="/simu-npb/teams">Teams</a><a href="/simu-npb/lineup-editor">Lineup Editor</a></nav></header><main>${content}</main><footer>Starting9 test source · Synthetic fixture data</footer></body></html>`;
 }
 
 function fixtureDateLabel(date) {
@@ -66,6 +68,168 @@ function gamePath(game) {
 
 function teamPath(teamKey) {
   return `/simu-npb/team/${encodeURIComponent(teamKey)}`;
+}
+
+function lineupKey(game) {
+  return `${LINEUP_KEY_PREFIX}${game.gameDate}:${game.npbGameCode}`;
+}
+
+function defaultLineup(teamKey, teams) {
+  return simulatorRoster(teamKey, teams).slice(0, 9).map((player, index) => ({
+    order: index + 1,
+    playerId: player.playerId,
+    position: POSITION_SEQUENCE[index]
+  }));
+}
+
+function validateLineup(input, teamKey, teams) {
+  if (!Array.isArray(input) || input.length !== 9) return { ok: false, code: "LINEUP_INCOMPLETE" };
+  const roster = simulatorRoster(teamKey, teams);
+  const rosterById = new Map(roster.map((player) => [player.playerId, player]));
+  const seenPlayers = new Set();
+  const seenOrders = new Set();
+  const normalized = [];
+  for (const row of input) {
+    const order = Number(row?.order);
+    const playerId = typeof row?.playerId === "string" ? row.playerId.trim() : "";
+    if (!Number.isInteger(order) || order < 1 || order > 9 || seenOrders.has(order) || !playerId) {
+      return { ok: false, code: "LINEUP_INCOMPLETE", order: Number.isInteger(order) ? order : null };
+    }
+    if (!rosterById.has(playerId)) return { ok: false, code: "PLAYER_NOT_ON_TEAM", order };
+    if (seenPlayers.has(playerId)) return { ok: false, code: "DUPLICATE_PLAYER", order };
+    seenOrders.add(order);
+    seenPlayers.add(playerId);
+    normalized.push({ order, playerId, position: POSITION_SEQUENCE[order - 1] });
+  }
+  if (seenOrders.size !== 9) return { ok: false, code: "LINEUP_INCOMPLETE" };
+  normalized.sort((left, right) => left.order - right.order);
+  return { ok: true, lineup: normalized };
+}
+
+async function readStoredLineups(env, game, teams) {
+  if (!env.SIMU_NPB_STATE) throw Object.assign(new Error("simulator storage unavailable"), { code: "SIMULATOR_STATE_UNAVAILABLE" });
+  const raw = await env.SIMU_NPB_STATE.get(lineupKey(game));
+  if (raw == null) return null;
+  let stored;
+  try { stored = JSON.parse(raw); } catch {
+    throw Object.assign(new Error("stored lineup is invalid"), { code: "SIMULATOR_LINEUP_DATA_INVALID" });
+  }
+  if (stored?.version !== 1 || stored.providerGameId !== game.npbGameCode || stored.gameDate !== game.gameDate
+    || stored.awayKey !== game.awayKey || stored.homeKey !== game.homeKey) {
+    throw Object.assign(new Error("stored lineup identity mismatch"), { code: "SIMULATOR_LINEUP_DATA_INVALID" });
+  }
+  const away = validateLineup(stored.awayLineup, game.awayKey, teams);
+  const home = validateLineup(stored.homeLineup, game.homeKey, teams);
+  if (!away.ok || !home.ok) throw Object.assign(new Error("stored lineup validation failed"), { code: "SIMULATOR_LINEUP_DATA_INVALID" });
+  return { ...stored, awayLineup: away.lineup, homeLineup: home.lineup };
+}
+
+function editorGameData(game, stored, teams) {
+  const teamData = (teamKey, side) => {
+    const lineup = stored?.[`${side}Lineup`] || defaultLineup(teamKey, teams);
+    return {
+      key: teamKey,
+      name: teams[teamKey].displayName,
+      roster: simulatorRoster(teamKey, teams).map(({ playerId, name, number }) => ({ playerId, name, number })),
+      lineup: lineup.map(({ order, playerId }) => ({ order, playerId }))
+    };
+  };
+  return {
+    providerGameId: game.npbGameCode,
+    gameDate: game.gameDate,
+    startAt: game.startAt,
+    away: teamData(game.awayKey, "away"),
+    home: teamData(game.homeKey, "home"),
+    announced: Boolean(stored)
+  };
+}
+
+async function readJsonLimited(request) {
+  const reader = request.body?.getReader();
+  if (!reader) return null;
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > LINEUP_MAX_BODY_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
+}
+
+function isSameOriginSimulatorWrite(request, url) {
+  const origin = request.headers.get("Origin");
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+  return origin === url.origin
+    && request.headers.get("X-Simu-NPB-Write") === "1"
+    && /^application\/json(?:\s*;|$)/i.test(request.headers.get("Content-Type") || "")
+    && (!fetchSite || fetchSite === "same-origin");
+}
+
+async function authorizeSameOriginWrite(request, authorizeAdmin) {
+  if (!isSameOriginSimulatorWrite(request, new URL(request.url))) {
+    return Response.json({ ok: false, code: "SAME_ORIGIN_REQUIRED" }, { status: 403, headers: { "Cache-Control": "no-store" } });
+  }
+  if (typeof authorizeAdmin !== "function") {
+    return Response.json({ ok: false, code: "EDITOR_AUTH_UNAVAILABLE" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+  }
+  let authorization;
+  try { authorization = await authorizeAdmin(request); } catch {
+    authorization = { ok: false, code: "EDITOR_AUTH_UNAVAILABLE", status: 503 };
+  }
+  if (authorization?.ok !== true) {
+    const status = [401, 403].includes(authorization?.status) ? authorization.status : 503;
+    return Response.json({ ok: false, code: authorization?.code || (status === 401 ? "ADMIN_REQUIRED" : "EDITOR_AUTH_UNAVAILABLE") }, {
+      status, headers: { "Cache-Control": "no-store" }
+    });
+  }
+  return null;
+}
+
+async function saveLineups(request, env, game, teams, authorizeAdmin) {
+  const denied = await authorizeSameOriginWrite(request, authorizeAdmin);
+  if (denied) return denied;
+  if (!env.SIMU_NPB_STATE) {
+    return Response.json({ ok: false, code: "SIMULATOR_STATE_UNAVAILABLE" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+  }
+  const body = await readJsonLimited(request);
+  if (!body || body.providerGameId !== game.npbGameCode) {
+    return Response.json({ ok: false, code: "INVALID_LINEUP_REQUEST" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  }
+  const away = validateLineup(body.awayLineup, game.awayKey, teams);
+  if (!away.ok) return Response.json({ ok: false, code: away.code, side: "away", order: away.order || null }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  const home = validateLineup(body.homeLineup, game.homeKey, teams);
+  if (!home.ok) return Response.json({ ok: false, code: home.code, side: "home", order: home.order || null }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  const stored = {
+    version: 1,
+    providerGameId: game.npbGameCode,
+    gameDate: game.gameDate,
+    awayKey: game.awayKey,
+    homeKey: game.homeKey,
+    awayLineup: away.lineup,
+    homeLineup: home.lineup,
+    updatedAt: new Date().toISOString()
+  };
+  try {
+    // One game-scoped KV value keeps both sides atomic and avoids game/team
+    // selections racing into a shared mutable lineup slot.
+    await env.SIMU_NPB_STATE.put(lineupKey(game), JSON.stringify(stored), { expirationTtl: 90 * 24 * 60 * 60 });
+  } catch {
+    return Response.json({ ok: false, code: "SIMULATOR_STATE_UNAVAILABLE" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+  }
+  return Response.json({ ok: true, game: editorGameData(game, stored, teams) }, { headers: { "Cache-Control": "no-store" } });
 }
 
 function scheduleTable(date, teams, groups) {
@@ -105,15 +269,22 @@ function teamPage(teamKey, date, teams, groups) {
   return pageShell(team.displayName, content);
 }
 
-function lineupRows(teamKey, teams, available) {
-  const players = simulatorRoster(teamKey, teams);
-  return available ? players.slice(0, 9).map((player, index) => `<tr><td>${index + 1}</td><td>${POSITION_SEQUENCE[index]}</td><td>${escapeHtml(player.name)}</td></tr>`).join("") : "";
+function lineupRows(teamKey, teams, available, lineup) {
+  if (!available) return "";
+  const roster = new Map(simulatorRoster(teamKey, teams).map((player) => [player.playerId, player]));
+  return lineup.map((row) => {
+    const player = roster.get(row.playerId);
+    return `<tr><td>${row.order}</td><td>${escapeHtml(row.position)}</td><td>${escapeHtml(player.name)}</td></tr>`;
+  }).join("");
 }
 
-function gamePage(game, teams, available) {
-  const teamPanel = (teamKey, side) => `<section class="panel lineup-panel"><div class="section-heading"><div><p class="eyebrow">${side}</p><h2><a href="${teamPath(teamKey)}">${escapeHtml(teams[teamKey].displayName)}</a></h2></div><span class="status">${available ? "ラインナップ発表済み" : "ラインナップ未発表"}</span></div>${available ? `<div class="table-scroll"><table data-lineup-team="${escapeHtml(teamKey)}"><thead><tr><th>打順</th><th>守備</th><th>選手</th></tr></thead><tbody>${lineupRows(teamKey, teams, true)}</tbody></table></div>` : `<p class="empty">スタメン未発表</p>`}</section>`;
-  const content = `<header class="page-heading"><p class="eyebrow">GAME DETAIL</p><h1 class="game-title"><span>${escapeHtml(game.awayTeam)}</span><span class="versus">vs</span><span>${escapeHtml(game.homeTeam)}</span></h1><p><time datetime="${escapeHtml(game.startAt)}">${escapeHtml(game.gameDate)} · ${escapeHtml(game.startAt.slice(11, 16))}</time> · ${escapeHtml(game.venue)} · ${escapeHtml(game.status)}</p><p class="fixture-id">Fixture ID: <code>${escapeHtml(game.npbGameCode)}</code></p></header><div class="lineup-grid">${teamPanel(game.awayKey, "AWAY")}${teamPanel(game.homeKey, "HOME")}</div><section class="panel"><p class="eyebrow">RESULT</p><h2>試合結果</h2><p class="empty">fixtureに結果データはありません。</p></section>`;
-  return pageShell("試合詳細", `<div data-game-code="${escapeHtml(game.npbGameCode)}" data-game-date="${escapeHtml(game.gameDate)}" data-home-team="${escapeHtml(game.homeTeam)}" data-away-team="${escapeHtml(game.awayTeam)}" data-game-status="${escapeHtml(game.status)}" data-start-at="${escapeHtml(game.startAt)}">${content}</div>`);
+function gamePage(game, teams, available, stored) {
+  const teamPanel = (teamKey, side, lineup, lineupAvailable) => `<section class="panel lineup-panel"><div class="section-heading"><div><p class="eyebrow">${side}</p><h2><a href="${teamPath(teamKey)}">${escapeHtml(teams[teamKey].displayName)}</a></h2></div><span class="status">${lineupAvailable ? "ラインナップ発表済み" : "ラインナップ未発表"}</span></div>${lineupAvailable ? `<div class="table-scroll"><table data-lineup-team="${escapeHtml(teamKey)}"><thead><tr><th>打順</th><th>守備</th><th>選手</th></tr></thead><tbody>${lineupRows(teamKey, teams, true, lineup)}</tbody></table></div>` : `<p class="empty">スタメン未発表</p>`}</section>`;
+  const lineupAvailable = Boolean(stored) || available;
+  const awayLineup = stored?.awayLineup || defaultLineup(game.awayKey, teams);
+  const homeLineup = stored?.homeLineup || defaultLineup(game.homeKey, teams);
+  const lineupContent = `<header class="page-heading"><p class="eyebrow">GAME DETAIL</p><h1 class="game-title"><span>${escapeHtml(game.awayTeam)}</span><span class="versus">vs</span><span>${escapeHtml(game.homeTeam)}</span></h1><p><time datetime="${escapeHtml(game.startAt)}">${escapeHtml(game.gameDate)} · ${escapeHtml(game.startAt.slice(11, 16))}</time> · ${escapeHtml(game.venue)} · ${escapeHtml(game.status)}</p><p class="fixture-id">Fixture ID: <code>${escapeHtml(game.npbGameCode)}</code></p></header><div class="lineup-grid">${teamPanel(game.awayKey, "AWAY", awayLineup, lineupAvailable)}${teamPanel(game.homeKey, "HOME", homeLineup, lineupAvailable)}</div><section class="panel"><p class="eyebrow">RESULT</p><h2>試合結果</h2><p class="empty">fixtureに結果データはありません。</p></section>`;
+  return pageShell("試合詳細", `<div data-game-code="${escapeHtml(game.npbGameCode)}" data-game-date="${escapeHtml(game.gameDate)}" data-home-team="${escapeHtml(game.homeTeam)}" data-away-team="${escapeHtml(game.awayTeam)}" data-game-status="${escapeHtml(game.status)}" data-start-at="${escapeHtml(game.startAt)}">${lineupContent}</div>`);
 }
 
 function starterPage(date, teams, groups) {
@@ -121,14 +292,20 @@ function starterPage(date, teams, groups) {
   return `<!doctype html><html lang="ja"><meta charset="utf-8"><title>予告先発 | S9simu NPB</title><body>${testOnlyNotice()}<h1>予告先発</h1><h4>${Number(date.slice(5, 7))}月 ${Number(date.slice(8, 10))}日 ${date.slice(0, 4)}</h4><section>${games.map((game, index) => `<div class="unit cl_${index + 1}"><div class="team_left"><img alt="${escapeHtml(game.homeTeam)}"><span>${escapeHtml(`テスト ${teams[game.homeKey].shortName} 先発`)}</span></div><div class="team_right"><img alt="${escapeHtml(game.awayTeam)}"><span>${escapeHtml(`テスト ${teams[game.awayKey].shortName} 先発`)}</div><div class="info">18:00 （S9simu球場）</div></div>`).join("")}</section></body></html>`;
 }
 
-function lineupPage(game, teamKey, available, teams) {
+function lineupPage(game, teamKey, available, teams, lineup) {
   const team = teams[teamKey];
-  const players = simulatorRoster(teamKey, teams);
-  const rows = available ? players.slice(0, 9).map((player, index) => `<tr><td>${index + 1}</td><td>${POSITION_SEQUENCE[index]}</td><td>${escapeHtml(player.name)}</td></tr>`).join("") : "";
+  const rows = lineupRows(teamKey, teams, available, lineup);
   return `<!doctype html><html lang="ja"><meta charset="utf-8"><title>試合速報・オーダー | S9simu NPB</title><body>${testOnlyNotice()}<h1>最新のオーダー</h1><div data-game-code="${game.npbGameCode}" data-game-date="${game.gameDate}" data-home-team="${game.homeTeam}" data-away-team="${game.awayTeam}" data-game-status="scheduled" data-start-at="${game.startAt}"><h5>${escapeHtml(team.displayName)}</h5><table data-lineup-team="${teamKey}"><thead><tr><th>打順</th><th>守備</th><th>選手名</th></tr></thead><tbody>${rows}</tbody></table>${available ? "" : "<p>スタメン未発表</p>"}</div></body></html>`;
 }
 
-export async function handleSimulatedNpbRequest(request, env = {}, { TEST_TEAMS, TEST_TEAM_GROUPS } = {}) {
+function lineupEditorPage(games) {
+  const options = games.map((game) => `<option value="${escapeHtml(game.npbGameCode)}">${escapeHtml(game.awayTeam)} vs ${escapeHtml(game.homeTeam)}</option>`).join("");
+  const teamEditor = (side, heading) => `<section class="panel editor-team" data-editor-side="${side}"><h2>${heading}</h2><div class="lineup-slots"></div></section>`;
+  const content = `<header class="page-heading"><p class="eyebrow">STARTING LINEUP</p><h1>Lineup Editor</h1><label class="editor-game-label" for="editor-game">試合</label><select id="editor-game">${options}</select><p id="editor-game-meta" class="editor-game-meta"></p></header><p id="editor-message" class="editor-message" role="status" aria-live="polite"></p><form id="lineup-editor-form"><div class="lineup-grid">${teamEditor("away", "ビジター")}${teamEditor("home", "ホーム")}</div><button id="save-lineup" class="save-lineup" type="submit">スタメンを保存</button></form><script defer src="/assets/simu-npb-lineup-editor.js"></script>`;
+  return pageShell("Lineup Editor", content);
+}
+
+export async function handleSimulatedNpbRequest(request, env = {}, { TEST_TEAMS, TEST_TEAM_GROUPS, authorizeAdmin } = {}) {
   if (!TEST_TEAMS || !TEST_TEAM_GROUPS) throw new Error("S9simu team catalogue is required");
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -136,13 +313,34 @@ export async function handleSimulatedNpbRequest(request, env = {}, { TEST_TEAMS,
   const games = simulatorGames(date, TEST_TEAMS, TEST_TEAM_GROUPS);
   const lineupState = await env.SIMU_NPB_STATE?.get("lineup-state").catch(() => null) || "pre-lineup";
 
+  if (path === "/simu-npb/lineup-editor" && request.method === "GET") {
+    return htmlResponse(lineupEditorPage(games));
+  }
+
+  const lineupApiMatch = path.match(/^\/simu-npb\/api\/lineups\/([a-z0-9-]+)$/i);
+  if (lineupApiMatch && ["GET", "PUT"].includes(request.method)) {
+    const game = games.find((entry) => entry.npbGameCode.toLowerCase() === lineupApiMatch[1].toLowerCase());
+    if (!game) return notFound();
+    if (request.method === "PUT") return saveLineups(request, env, game, TEST_TEAMS, authorizeAdmin);
+    try {
+      const stored = await readStoredLineups(env, game, TEST_TEAMS);
+      return Response.json({ ok: true, game: editorGameData(game, stored, TEST_TEAMS) }, { headers: { "Cache-Control": "no-store" } });
+    } catch (error) {
+      return Response.json({ ok: false, code: error?.code || "SIMULATOR_STATE_UNAVAILABLE" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
+  }
+
   if (path === "/simu-npb/control" && request.method === "POST") {
-    const body = await request.json().catch(() => null);
+    const denied = await authorizeSameOriginWrite(request, authorizeAdmin);
+    if (denied) return denied;
+    const body = await readJsonLimited(request);
     if (!body || !["pre-lineup", "available"].includes(body.lineupState)) {
       return Response.json({ ok: false, code: "INVALID_SIMULATOR_STATE" }, { status: 400, headers: { "Cache-Control": "no-store" } });
     }
     if (!env.SIMU_NPB_STATE) return Response.json({ ok: false, code: "SIMULATOR_STATE_UNAVAILABLE" }, { status: 503 });
-    await env.SIMU_NPB_STATE.put("lineup-state", body.lineupState);
+    try { await env.SIMU_NPB_STATE.put("lineup-state", body.lineupState); } catch {
+      return Response.json({ ok: false, code: "SIMULATOR_STATE_UNAVAILABLE" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
     return Response.json({ ok: true, lineupState: body.lineupState }, { headers: { "Cache-Control": "no-store" } });
   }
 
@@ -157,7 +355,13 @@ export async function handleSimulatedNpbRequest(request, env = {}, { TEST_TEAMS,
   const gamePageMatch = path.match(/^\/simu-npb\/game\/([a-z0-9-]+)$/i);
   if (gamePageMatch && request.method === "GET") {
     const game = games.find((entry) => entry.npbGameCode.toLowerCase() === decodeURIComponent(gamePageMatch[1]).toLowerCase());
-    return game ? htmlResponse(gamePage(game, TEST_TEAMS, lineupState === "available")) : notFound();
+    if (!game) return notFound();
+    try {
+      const stored = await readStoredLineups(env, game, TEST_TEAMS);
+      return htmlResponse(gamePage(game, TEST_TEAMS, lineupState === "available", stored));
+    } catch (error) {
+      return Response.json({ ok: false, code: error?.code || "SIMULATOR_STATE_UNAVAILABLE" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
   }
   if (path === "/simu-npb/api/public/games" && request.method === "GET") {
     const requestedDate = url.searchParams.get("date");
@@ -192,7 +396,13 @@ export async function handleSimulatedNpbRequest(request, env = {}, { TEST_TEAMS,
     const game = games.find((entry) => entry.npbGameCode === scoreMatch[3]);
     const teamKey = url.searchParams.get("team") || game?.homeKey;
     if (!game || !TEST_TEAMS[teamKey] || ![game.homeKey, game.awayKey].includes(teamKey)) return notFound();
-    return htmlResponse(lineupPage(game, teamKey, lineupState === "available", TEST_TEAMS));
+    try {
+      const stored = await readStoredLineups(env, game, TEST_TEAMS);
+      const lineup = stored?.[`${teamKey === game.awayKey ? "away" : "home"}Lineup`] || defaultLineup(teamKey, TEST_TEAMS);
+      return htmlResponse(lineupPage(game, teamKey, Boolean(stored) || lineupState === "available", TEST_TEAMS, lineup));
+    } catch (error) {
+      return Response.json({ ok: false, code: error?.code || "SIMULATOR_STATE_UNAVAILABLE" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
   }
   return notFound();
 }

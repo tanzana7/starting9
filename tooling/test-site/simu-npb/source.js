@@ -1,3 +1,5 @@
+import { SIMULATED_NPB_ROSTERS_2026 } from "./rosters.js";
+
 const POSITION_SEQUENCE = Object.freeze(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const LINEUP_KEY_PREFIX = "lineup:v1:";
 const LINEUP_MAX_BODY_BYTES = 16 * 1024;
@@ -28,12 +30,11 @@ export function simulatorGames(date, teams, groups) {
 
 export function simulatorRoster(teamKey, teams) {
   const team = teams[teamKey];
-  if (!team) return null;
-  return Array.from({ length: 15 }, (_, index) => ({
+  const players = SIMULATED_NPB_ROSTERS_2026[teamKey];
+  if (!team || !players) return null;
+  return players.map((player, index) => ({
     playerId: `npb:${String(90000001 + Object.keys(teams).indexOf(teamKey) * 100 + index)}`,
-    name: `テスト ${team.shortName} 選手 ${String(index + 1).padStart(2, "0")}`,
-    number: String(index + 1),
-    position: index < 2 ? "捕手" : index < 7 ? "内野手" : "外野手",
+    ...player,
     teamCode: teamKey,
     teamId: team.playerTeamId
   }));

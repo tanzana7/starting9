@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { fetchNpbWorkerJson } from "../auth-worker.js";
 import teamContext from "../frontend/shared/team-context.js";
 import { TEST_TEAMS, TEST_TEAM_GROUPS } from "../tooling/test-site/teams.js";
-import { handleSimulatedNpbRequest, simulatorGameDate } from "../tooling/test-site/simu-npb/source.js";
+import { handleSimulatedNpbRequest, simulatorGameDate, simulatorRoster } from "../tooling/test-site/simu-npb/source.js";
 
 function simulatorFetch(requests) {
   return async (input) => {
@@ -14,6 +14,10 @@ function simulatorFetch(requests) {
     }, { TEST_TEAMS, TEST_TEAM_GROUPS });
     return response;
   };
+}
+
+function parsedPlayerNames(teamKey, limit = 15) {
+  return simulatorRoster(teamKey, TEST_TEAMS).slice(0, limit).map((player) => player.name.replace(/\s+/gu, ""));
 }
 
 const baseEnv = (teamKey) => ({
@@ -31,7 +35,7 @@ test("Auth Worker's simulator fetch binds roster and lineup parsing to the selec
   const requests = [];
   const marinesRoster = await fetchNpbWorkerJson(baseEnv("marines"), { mode: "roster" }, { fetchImpl: simulatorFetch(requests) });
   assert.equal(marinesRoster.players.length, 15);
-  assert.ok(marinesRoster.players.every((player) => player.name.includes(TEST_TEAMS.marines.shortName)));
+  assert.deepEqual(marinesRoster.players.map((player) => player.name), parsedPlayerNames("marines"));
   assert.match(requests[0].pathname, /\/roster\/marines\/$/);
 
   const date = simulatorGameDate();
@@ -40,12 +44,12 @@ test("Auth Worker's simulator fetch binds roster and lineup parsing to the selec
     mode: "lineup", date, gameCode: code, homeTeam: "eagles", awayTeam: "marines"
   }, { fetchImpl: simulatorFetch(requests) });
   assert.equal(lineup.lineup.length, 9);
-  assert.ok(lineup.lineup.every((player) => player.playerName.includes(TEST_TEAMS.marines.shortName)));
+  assert.deepEqual(lineup.lineup.map((player) => player.playerName), parsedPlayerNames("marines", 9));
   assert.equal(requests[1].searchParams.get("team"), "marines");
 
   const eagles = await fetchNpbWorkerJson(baseEnv("eagles"), {
     mode: "lineup", date, gameCode: code, homeTeam: "eagles", awayTeam: "marines"
   }, { fetchImpl: simulatorFetch(requests) });
-  assert.ok(eagles.lineup.every((player) => player.playerName.includes(TEST_TEAMS.eagles.shortName)));
+  assert.deepEqual(eagles.lineup.map((player) => player.playerName), parsedPlayerNames("eagles", 9));
   assert.notEqual(lineup.lineup[0].playerName, eagles.lineup[0].playerName);
 });

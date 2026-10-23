@@ -11,6 +11,7 @@ const testOnlyDirectory = path.join(path.dirname(fileURLToPath(import.meta.url))
 const simulatorSourceDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "simu-npb");
 const simulatorFunctionsDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "pages-project", "functions", "simu-npb");
 const testOnlyFiles = ["test-scenarios.html", "scenario-controls.js"];
+const simulatorEditorAsset = "simu-npb-lineup-editor.js";
 
 function resetGeneratedDirectory(directory, expectedName) {
   const distRoot = path.resolve(root, "dist");
@@ -44,6 +45,9 @@ for (const file of testOnlyFiles) {
   if (!fs.existsSync(source)) throw new Error(`required Test Site asset missing: ${file}`);
   fs.copyFileSync(source, path.join(output, file));
 }
+const assetsOutput = path.join(output, "assets");
+fs.mkdirSync(assetsOutput, { recursive: true });
+fs.copyFileSync(path.join(testOnlyDirectory, simulatorEditorAsset), path.join(assetsOutput, simulatorEditorAsset));
 for (const directory of SHARED_PAGE_DIRECTORIES.filter((name) => name !== "functions")) {
   const source = path.join(root, directory);
   if (!fs.existsSync(source)) throw new Error(`required Pages directory missing: ${directory}`);
@@ -115,6 +119,7 @@ fs.mkdirSync(simulatorFunctionOutput, { recursive: true });
 fs.copyFileSync(path.join(simulatorSourceDirectory, "source.js"), path.join(simulatorFunctionOutput, "source.js"));
 fs.copyFileSync(path.join(simulatorFunctionsDirectory, "[[path]].js"), path.join(simulatorFunctionOutput, "[[path]].js"));
 fs.copyFileSync(path.join(simulatorFunctionsDirectory, "..", "index.js"), path.join(pagesProject, "functions", "index.js"));
+fs.copyFileSync(path.join(simulatorFunctionsDirectory, "..", "simu-admin-auth.js"), path.join(pagesProject, "functions", "simu-admin-auth.js"));
 const simulatorTeamModule = `export const TEST_TEAMS = ${JSON.stringify(TEST_TEAMS)};\nexport const TEST_TEAM_GROUPS = ${JSON.stringify(TEST_TEAM_GROUPS)};\n`;
 fs.writeFileSync(path.join(simulatorFunctionOutput, "teams.js"), simulatorTeamModule);
 const pagesConfigPath = path.join(root, "tooling", "test-site", "pages-project", "wrangler.jsonc");

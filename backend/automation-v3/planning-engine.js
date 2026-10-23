@@ -424,7 +424,27 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
     return { ...plan, reasonCode: "OPEN_JOB_EXISTS" };
   }
   const lateLineupFetch = stage === "lineup_fetch"
-    ? getLateLineupFetchDecision({ game, effectiveState, now, finalLineupAt: schedule.finalLineupAt })
+    ? getLateLineupFetchDecision({
+        // A physical fixture can have multiple contest workflows. In that
+        // mode, publication belongs to the contest state already resolved
+        // above; game-wide publication hints may describe a published sibling.
+        game: contestId
+          ? {
+              ...game,
+              workflowState: effectiveState,
+              workflow_state: effectiveState,
+              publicationStatus: "pending",
+              publication_status: "pending",
+              publishedAt: "",
+              published_at: "",
+              isPublished: false,
+              is_published: 0
+            }
+          : game,
+        effectiveState,
+        now,
+        finalLineupAt: schedule.finalLineupAt
+      })
     : null;
   if (lateLineupFetch?.late && !lateLineupFetch.allowed) {
     if (OPEN_STATUSES.has(status)) return { ...plan, reasonCode: "OPEN_JOB_EXISTS" };

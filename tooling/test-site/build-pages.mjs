@@ -35,6 +35,15 @@ const routeManifestPath = path.join(output, "_routes.json");
 const routeManifest = JSON.parse(fs.readFileSync(routeManifestPath, "utf8"));
 routeManifest.include = [...new Set([...(routeManifest.include || []), "/", "/simu-npb/*"])];
 fs.writeFileSync(routeManifestPath, `${JSON.stringify(routeManifest, null, 2)}\n`);
+// Old clone routes may remain at CDN edges for their asset TTL after removal.
+// Redirect their document URLs instead of allowing stale cached HTML to
+// continue presenting a third public Starting9 frontend.
+fs.writeFileSync(path.join(output, "_redirects"), [
+  "/starting9 https://starting9-app.pages.dev/ 302",
+  "/starting9/ https://starting9-app.pages.dev/ 302",
+  "/starting9/* https://starting9-app.pages.dev/ 302",
+  "/teams/* https://starting9-app.pages.dev/teams/:splat 302"
+].join("\n") + "\n");
 const assetsOutput = path.join(output, "assets");
 fs.mkdirSync(assetsOutput, { recursive: true });
 for (const asset of simulatorAssets) {

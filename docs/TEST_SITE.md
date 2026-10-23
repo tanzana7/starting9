@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`s9simu.pages.dev` is the public Simulated NPB source site. Its root, schedule, team, and game pages render the same six-game, twelve-team fixture used by the machine-readable schedule and existing parser-compatible roster/lineup pages. The duplicate Starting9 Test frontend is not published; `starting9-app.pages.dev` is the only public Starting9 UI. Test Worker, Test D1, API, simulator admin endpoint, fixtures, and E2E tooling remain isolated and are not production data sources.
+`s9simu.pages.dev` is the public Simulated NPB source site. Its root, schedule, team, and game pages render the same six-game, twelve-team fixture used by the machine-readable schedule and existing parser-compatible roster/lineup pages. The duplicate Starting9 Test frontend is not published; legacy `/starting9/` and `/teams/*` document URLs redirect to `starting9-app.pages.dev`, the only public Starting9 UI. Test Worker, Test D1, API, simulator admin endpoint, fixtures, and E2E tooling remain isolated and are not production data sources.
 
 ## Resource boundary
 
@@ -42,6 +42,6 @@ The fixture contains six deterministic physical games, pairing all twelve canoni
 
 ## Build, validate, and deploy
 
-Build static assets with `node tooling/test-site/build-pages.mjs`. The public artifact contains only the Simulated NPB route manifest and simulator styles/editor asset; its Pages Functions and isolated APIs are assembled separately under `dist/test-site-project`. Starting9 app files and private scenario-control UI sources are not published. Validate the test Worker with `npx wrangler deploy --dry-run --config wrangler.test-auth.jsonc --profile starting9-target`; deploy only with that exact config and profile. The build creates the Pages project root at `dist/test-site-project`, with its config and Pages Function proxy, and public files at `dist/test-site`. Run Pages commands with `--cwd dist/test-site-project --profile starting9-target`. Never omit the profile, and do not run `tooling/production-deploy.cjs` for test resources.
+Build static assets with `node tooling/test-site/build-pages.mjs`. The public artifact contains only the legacy-route redirects, Simulated NPB route manifest, and simulator styles/editor asset; its Pages Functions and isolated APIs are assembled separately under `dist/test-site-project`. Starting9 app files and private scenario-control UI sources are not published. Validate the test Worker with `npx wrangler deploy --dry-run --config wrangler.test-auth.jsonc --profile starting9-target`; deploy only with that exact config and profile. The build creates the Pages project root at `dist/test-site-project`, with its config and Pages Function proxy, and public files at `dist/test-site`. Run Pages commands with `--cwd dist/test-site-project --profile starting9-target`. Never omit the profile, and do not run `tooling/production-deploy.cjs` for test resources.
 
 Apply the repository's existing Auth and Audit migrations only to the two test D1s, using the explicit test Worker config and `starting9-target` profile. Do not run source-account commands or production configs during setup.

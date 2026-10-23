@@ -8,7 +8,7 @@ import fs from "node:fs";
 const SITE_ORIGIN = "https://s9simu.pages.dev";
 const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
 const RUN_MODE = String(process.env.S9SIMU_MODE || "full").trim().toLowerCase();
-assert.ok(["full", "schedule-check", "job-only", "sibling-check", "admin-diagnose", "admin-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, job-only, sibling-check, admin-diagnose, or admin-check");
+assert.ok(["full", "schedule-check", "roster-only", "job-only", "sibling-check", "admin-diagnose", "admin-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, roster-only, job-only, sibling-check, admin-diagnose, or admin-check");
 
 const config = JSON.parse(fs.readFileSync(new URL("../../wrangler.test-auth.jsonc", import.meta.url), "utf8"));
 assertTestAuthConfig(config);
@@ -247,6 +247,18 @@ async function fetchSimulatorSchedule({ requireFreshSync = false } = {}) {
   const physicalGames = response.payload.physicalGames || [];
   assert.equal(physicalGames.length, 6);
   assert.equal(response.payload.contestCount, 12);
+  for (const game of physicalGames) {
+    assert.ok(game.internal_game_id, `simulator ${game.game_code}: schedule internal identity`);
+    assert.equal(game.persisted_internal_game_id, game.internal_game_id,
+      `simulator ${game.game_code}: detected schedule must resolve to the persisted product game`);
+    assert.equal(game.provider_game_id, game.game_code,
+      `simulator ${game.game_code}: persisted provider identity must match the simulator source`);
+    assert.equal(Number(game.persisted_contest_count), 2,
+      `simulator ${game.game_code}: one physical game must have exactly two persisted contests`);
+    const group = simulatorGroupForGame(game);
+    assert.deepEqual(String(game.persisted_contest_teams || "").split(",").sort(), [group.homeKey, group.awayKey].sort(),
+      `simulator ${game.game_code}: persisted contests must match both source teams`);
+  }
   const diagnostics = response.payload.scheduleDiagnostics || {};
   assert.equal(diagnostics.requestedDate, response.payload.date);
   if (requireFreshSync || diagnostics.rawGamesCount !== null) {
@@ -419,6 +431,44 @@ async function runLineupJobOnlyCheck() {
   if (checkError) throw checkError;
 }
 
+async function runRosterOnlyCheck() {
+  const physicalGames = await fetchSimulatorSchedule();
+  // Use a non-first physical game so the assertion cannot pass via a default
+  // or first-fixture fallback. The provider code is the simulator namespace;
+  // all application and cleanup calls continue to use the persisted internal ID.
+  const game = physicalGames[1];
+  assert.ok(game, "roster-only check requires a non-first physical game");
+  const providerGameId = String(game.game_code || "");
+  const group = simulatorGroupForGame(game);
+  const queryFor = (teamKey) => `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
+  let checkError = null;
+  try {
+    for (const teamKey of [group.homeKey, group.awayKey]) {
+      const roster = await call(`/api/game-day-roster${queryFor(teamKey)}`, { admin: true });
+      assert.equal(roster.payload.players?.length, 15, `${teamKey}: simulator roster should contain 15 players`);
+      assert.ok(roster.payload.players.every((player) => player.teamCode === teamKey), `${teamKey}: roster must match the persisted contest`);
+      console.log(`S9SIMU_ROSTER_IDENTITY: ${JSON.stringify({
+        providerGameId, internalGameId: game.internal_game_id, contestTeam: teamKey,
+        lookupNamespace: "internalGameId->persisted npb_game_code", found: true, playerCount: roster.payload.players.length
+      })}`);
+    }
+  } catch (error) {
+    checkError = error;
+  } finally {
+    try {
+      const cleanup = await call(`/api/test/scenario${queryFor(group.homeKey)}`, {
+        method: "POST", admin: true, body: { scenario: "no-game" }
+      });
+      assert.equal(cleanup.payload.scenario, "no-game");
+    } catch (cleanupError) {
+      if (checkError) throw new AggregateError([checkError, cleanupError], "roster-only check and dynamic fixture cleanup failed");
+      throw cleanupError;
+    }
+  }
+  if (checkError) throw checkError;
+  console.log(`S9SIMU_ROSTER_ONLY_COMPLETE: ${JSON.stringify({ providerGameId, internalGameId: game.internal_game_id, teams: [group.homeKey, group.awayKey], cleanup: "completed" })}`);
+}
+
 function simulatorGroupForGame(game) {
   const match = String(game.game_code || "").match(/^g-t-(\d+)$/);
   assert.ok(match, "schedule parser should preserve each simulator game code");
@@ -447,6 +497,8 @@ try {
     })}`);
   } else if (RUN_MODE === "job-only") {
     await runLineupJobOnlyCheck();
+  } else if (RUN_MODE === "roster-only") {
+    await runRosterOnlyCheck();
   } else if (RUN_MODE === "sibling-check") {
     await runSiblingCheck();
   } else {
@@ -533,6 +585,7 @@ if (RUN_MODE === "full") {
   assert.equal(publishedContests, 0);
   assert.equal(temporaryUserRetained, false);
   if (RUN_MODE === "schedule-check") console.log("Completed one schedule-only diagnostic; temporary admin access was revoked.");
+  else if (RUN_MODE === "roster-only") console.log("Completed one non-first-game roster identity check; dynamic fixture and temporary admin access were cleaned up.");
   else if (RUN_MODE === "sibling-check") console.log("Completed one same-game sibling check; temporary admin access was revoked.");
   else if (RUN_MODE === "job-only") console.log("Completed one lineup-job lifecycle check; the bounded fixture and temporary admin access were cleaned up.");
   else if (RUN_MODE === "admin-check") console.log("Completed two bounded admin provision/cleanup cycles; no game scenario was run.");

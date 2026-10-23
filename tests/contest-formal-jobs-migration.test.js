@@ -132,6 +132,41 @@ test("bounded due claim filters formal work to the selected target team", async 
   } finally { database.close(); }
 });
 
+test("same-game lineup jobs are created and claimed independently in either team order", async () => {
+  for (const teamOrder of [["fighters", "marines"], ["marines", "fighters"]]) {
+    const database = new DatabaseSync(":memory:");
+    try {
+      applyThrough(database);
+      seedGameAndContests(database);
+      const db = d1(database);
+      const slot = new Date("2026-10-21T09:00:00.000Z");
+      const contestByTeam = { fighters: CONTEST_F, marines: CONTEST_M };
+      const jobs = {};
+      for (const team of ["fighters", "marines"]) {
+        const created = await createV3Job(db, {
+          internalGameId: GAME_ID,
+          contestId: contestByTeam[team],
+          jobType: "lineup_fetch",
+          scheduledSlotAt: slot
+        });
+        assert.equal(created.created, true, `${team}: lineup job created`);
+        jobs[team] = created.job;
+      }
+      assert.notEqual(jobs.fighters.id, jobs.marines.id);
+
+      for (const team of teamOrder) {
+        const report = await claimDueJobs(db, new Date(NOW), [], { targetTeamKey: team });
+        assert.deepEqual(report.claimed.map((entry) => entry.claimed.contest_id), [contestByTeam[team]],
+          `${team}: only its own lineup job is claimed`);
+        assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE id=?").get(jobs[team].id).status, "claimed");
+        const sibling = team === "fighters" ? "marines" : "fighters";
+        assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE id=?").get(jobs[sibling].id).status,
+          teamOrder.indexOf(sibling) < teamOrder.indexOf(team) ? "claimed" : "pending");
+      }
+    } finally { database.close(); }
+  }
+});
+
 test("formal prediction-close executor locks only the claimed contest's shared-user prediction", async () => {
   const database = new DatabaseSync(":memory:");
   try {

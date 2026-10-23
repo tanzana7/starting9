@@ -71,6 +71,7 @@ test("Test Site Pages artifact retains scenario UI, controls, banner, and shared
   assert.ok(files.includes("index.html"));
   assert.ok(files.includes("starting9/index.html"));
   assert.ok(files.includes("assets/simu-npb.css"));
+  assert.ok(files.includes("assets/simu-npb-lineup-editor.js"));
   assert.ok(files.includes("script.js"));
   assert.ok(files.includes("style.css"));
   assert.ok(files.includes("test-environment.css"));
@@ -98,6 +99,7 @@ test("Test Site Pages artifact retains scenario UI, controls, banner, and shared
   const generatedPagesProject = path.join(root, "dist", "test-site-project");
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "api", "[[path]].js")));
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "simu-npb", "[[path]].js")));
+  assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "simu-admin-auth.js")));
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "index.js")));
   assert.equal(JSON.parse(readArtifact(generatedPagesProject, "wrangler.jsonc")).pages_build_output_dir, "../test-site");
 });

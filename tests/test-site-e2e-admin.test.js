@@ -230,6 +230,95 @@ test("an OIDC proof can provision exactly one identity and cleanup keeps its rep
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
 });
 
+test("E2E provisioning failures expose only a stage and allowlisted database diagnostics", async (t) => {
+  const f = await fixture();
+  t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
+  const originalPrepare = f.env.AUTH_DB.prepare.bind(f.env.AUTH_DB);
+  f.env.AUTH_DB.prepare = (sql) => {
+    if (sql.includes("substr(username, 1, 4) = 'e2e-'")) {
+      return { bind: () => ({ run: async () => {
+        const error = new Error("constraint details must never be returned: secret-value");
+        error.code = "SQLITE_ERROR";
+        throw error;
+      } }) };
+    }
+    return originalPrepare(sql);
+  };
+  const result = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
+  assert.equal(result.response.status, 500);
+  assert.deepEqual(result.payload, {
+    ok: false,
+    code: "E2E_ADMIN_PROVISION_FAILED",
+    reasonCode: "E2E_MARKER_CLEANUP_FAILED",
+    stage: "expired_marker_cleanup",
+    errorClass: "Error",
+    databaseCode: "SQLITE_ERROR"
+  });
+  assert.equal(JSON.stringify(result.payload).includes("secret-value"), false);
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM users").get().count, 0);
+});
+
+test("cleanup invalidates one run and permits a distinct run while preserving the replay tombstone", async (t) => {
+  const f = await fixture();
+  t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
+
+  const firstProof = f.createOidcToken();
+  const first = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "provision", runId: firstProof.runId }, authorization: firstProof.token
+  });
+  assert.equal(first.response.status, 201);
+  const firstCookie = (first.response.headers.get("Set-Cookie") || "").split(";", 1)[0];
+  const firstUsername = first.payload.username;
+  const cleanFirst = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "cleanup", runId: firstProof.runId }, cookie: firstCookie
+  });
+  assert.equal(cleanFirst.response.status, 200);
+  assert.equal(classifyE2ECleanupResult(cleanFirst.payload), "replay-blocked");
+  const replay = await f.request("/api/auth/me", { cookie: firstCookie });
+  assert.equal(replay.payload.authenticated, false);
+
+  const secondProof = f.createOidcToken({
+    run_id: firstProof.claims.run_id,
+    run_attempt: firstProof.claims.run_attempt
+  });
+  assert.equal(secondProof.runId, firstProof.runId);
+  const second = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "provision", runId: secondProof.runId }, authorization: secondProof.token
+  });
+  assert.equal(second.response.status, 201);
+  assert.notEqual(second.payload.username, firstUsername);
+  const cleanSecond = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "cleanup", runId: secondProof.runId },
+    cookie: (second.response.headers.get("Set-Cookie") || "").split(";", 1)[0]
+  });
+  assert.equal(cleanSecond.response.status, 200);
+  assert.equal(classifyE2ECleanupResult(cleanSecond.payload), "replay-blocked");
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM users WHERE username = ?").get(firstUsername).count, 1);
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
+});
+
+test("a stale identity collision fails closed without modifying the existing account", async (t) => {
+  const f = await fixture();
+  t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
+  const proof = f.createOidcToken();
+  const identity = await (await import("../tooling/test-site/github-oidc.js")).verifyS9SimuRunToken(proof.token);
+  f.database.prepare(`INSERT INTO users
+    (id, username, username_normalized, password_hash, password_salt, password_iterations, created_at, updated_at, status, role)
+    VALUES ('stale-e2e-user', ?, ?, 'hash', 'salt', 1, '2026-01-01', '2026-01-01', 'active', 'admin')`)
+    .run(identity.username, identity.username);
+
+  const result = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "provision", runId: proof.runId }, authorization: proof.token
+  });
+  assert.equal(result.response.status, 409);
+  assert.equal(result.payload.code, "E2E_RUN_REPLAYED");
+  const retained = f.database.prepare("SELECT id, role, status FROM users WHERE username = ?").get(identity.username);
+  assert.equal(retained.id, "stale-e2e-user");
+  assert.equal(retained.role, "admin");
+  assert.equal(retained.status, "active");
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
+});
+
 test("an expired replay marker is deleted by the next authorized provisioning run", async (t) => {
   const f = await fixture();
   t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });

@@ -8,7 +8,7 @@ import fs from "node:fs";
 const SITE_ORIGIN = "https://s9simu.pages.dev";
 const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
 const RUN_MODE = String(process.env.S9SIMU_MODE || "full").trim().toLowerCase();
-assert.ok(["full", "schedule-check", "sibling-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, or sibling-check");
+assert.ok(["full", "schedule-check", "sibling-check", "admin-diagnose", "admin-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, sibling-check, admin-diagnose, or admin-check");
 
 const config = JSON.parse(fs.readFileSync(new URL("../../wrangler.test-auth.jsonc", import.meta.url), "utf8"));
 assertTestAuthConfig(config);
@@ -31,7 +31,7 @@ let cleanupError = null;
 let publishedContests = 0;
 let lastScheduleDiagnostics = null;
 
-async function call(path, { method = "GET", body, admin = false, authorizationToken = "", expectedStatus = 200 } = {}) {
+async function call(path, { method = "GET", body, admin = false, authorizationToken = "", sessionCookie = "", expectedStatus = 200 } = {}) {
   const team = new URL(`https://local.invalid${path}`).searchParams.get("testTeam") || "fighters";
   const headers = {
     Origin: SITE_ORIGIN,
@@ -39,6 +39,7 @@ async function call(path, { method = "GET", body, admin = false, authorizationTo
     Cookie: `s9_test_team=${encodeURIComponent(team)}; s9_test_source=simu-npb`
   };
   if (admin && cookie) headers.Cookie += `; ${cookie}`;
+  else if (sessionCookie) headers.Cookie += `; ${sessionCookie}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (authorizationToken) headers.Authorization = `Bearer ${authorizationToken}`;
   const response = await fetch(`${SITE_ORIGIN}${path}`, {
@@ -49,8 +50,11 @@ async function call(path, { method = "GET", body, admin = false, authorizationTo
   });
   const payload = await response.json().catch(() => null);
   if (response.status !== expectedStatus) {
-    const reason = payload?.code || payload?.error || "unexpected-response";
-    throw new Error(`${method} ${new URL(path, SITE_ORIGIN).pathname} returned ${response.status} (${String(reason).slice(0, 180)})`);
+    const safeDetails = [payload?.reasonCode, payload?.stage, payload?.errorClass, payload?.databaseCode, payload?.constraint]
+      .filter((value) => typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value))
+      .join("/");
+    const reason = [payload?.code || payload?.error || "unexpected-response", safeDetails].filter(Boolean).join(":");
+    throw new Error(`${method} ${new URL(path, SITE_ORIGIN).pathname} returned ${response.status} (${reason.slice(0, 180)})`);
   }
   return { response, payload };
 }
@@ -76,6 +80,51 @@ async function provisionAdmin() {
   assert.equal(auth.payload.authenticated, true);
   const isAdmin = await call("/api/admin/me?testTeam=fighters", { admin: true });
   assert.equal(isAdmin.payload.admin, true);
+}
+
+async function cleanupTemporaryAdmin() {
+  if (!temporaryAdminCreated) return;
+  const cleanup = await call("/api/test/e2e-admin", {
+    method: "POST", body: {
+      action: "cleanup",
+      username: temporaryAdminUsername,
+      preserveUser: primaryError === null && publishedContests === 12,
+      runId
+    },
+    admin: Boolean(cookie), authorizationToken: cookie ? "" : githubOidcToken
+  });
+  const cleanupKind = classifyE2ECleanupResult(cleanup.payload);
+  if (cleanupKind === "retained-user") {
+    assert.equal(cleanup.payload.removed, false);
+    temporaryUserRetained = true;
+  } else if (cleanupKind === "deleted" || cleanupKind === "replay-blocked" || cleanupKind === "already-absent") {
+    temporaryUserRetained = false;
+  } else {
+    assert.fail("E2E cleanup returned an unknown or contradictory outcome");
+  }
+  cookie = "";
+  githubOidcToken = "";
+  temporaryAdminCreated = false;
+}
+
+async function runAdminReproducibilityCheck() {
+  await provisionAdmin();
+  const firstCookie = cookie;
+  const firstUsername = temporaryAdminUsername;
+  await cleanupTemporaryAdmin();
+  const replay = await call("/api/auth/me?testTeam=fighters", { sessionCookie: firstCookie, expectedStatus: 200 });
+  assert.equal(replay.payload.authenticated, false, "cleanup revokes the first session");
+
+  // A second GitHub OIDC token has a distinct jti, producing a new disposable
+  // identity while retaining the same workflow run/attempt for auditability.
+  await provisionAdmin();
+  assert.notEqual(temporaryAdminUsername, firstUsername, "new proof receives a distinct temporary identity");
+  const secondCookie = cookie;
+  await cleanupTemporaryAdmin();
+  const secondReplay = await call("/api/auth/me?testTeam=fighters", { sessionCookie: secondCookie, expectedStatus: 200 });
+  assert.equal(secondReplay.payload.authenticated, false, "second cleanup revokes its session");
+  assert.ok(firstCookie.startsWith("s9_session=") && secondCookie.startsWith("s9_session="));
+  console.log("S9SIMU_ADMIN_REPRODUCIBILITY: provision A → cleanup A → revoked replay → provision B → cleanup B → revoked replay");
 }
 
 async function requestGitHubOidcToken() {
@@ -294,6 +343,12 @@ function simulatorGroupForGame(game) {
 }
 
 try {
+  if (RUN_MODE === "admin-diagnose") {
+    await provisionAdmin();
+    console.log("S9SIMU_ADMIN_DIAGNOSTIC: provision succeeded; temporary session will be cleaned up.");
+  } else if (RUN_MODE === "admin-check") {
+    await runAdminReproducibilityCheck();
+  } else {
   await provisionAdmin();
   if (RUN_MODE === "schedule-check") {
     const games = await fetchSimulatorSchedule({ requireFreshSync: true });
@@ -363,30 +418,13 @@ try {
   assert.equal(publishedContests, 12);
   console.log("S9SIMU_PIPELINE_COMPLETE: 6 physical games, 12 published contests; fixture retained.");
   }
+  }
 } catch (error) {
   primaryError = error;
 } finally {
   if (temporaryAdminCreated) {
     try {
-      const cleanup = await call("/api/test/e2e-admin", {
-        method: "POST", body: {
-          action: "cleanup",
-          username: temporaryAdminUsername,
-          preserveUser: primaryError === null && publishedContests === 12,
-          runId
-        },
-        admin: Boolean(cookie), authorizationToken: cookie ? "" : githubOidcToken
-      });
-      const cleanupKind = classifyE2ECleanupResult(cleanup.payload);
-      if (cleanupKind === "retained-user") {
-        assert.equal(cleanup.payload.removed, false);
-        temporaryUserRetained = true;
-      } else if (cleanupKind === "deleted" || cleanupKind === "replay-blocked" || cleanupKind === "already-absent") {
-        temporaryUserRetained = false;
-      } else {
-        assert.fail("E2E cleanup returned an unknown or contradictory outcome");
-      }
-      cookie = "";
+      await cleanupTemporaryAdmin();
     } catch (error) {
       cleanupError = error;
     }
@@ -405,5 +443,7 @@ if (RUN_MODE === "full") {
   assert.equal(publishedContests, 0);
   assert.equal(temporaryUserRetained, false);
   if (RUN_MODE === "schedule-check") console.log("Completed one schedule-only diagnostic; temporary admin access was revoked.");
-  else console.log("Completed one same-game sibling check; temporary admin access was revoked.");
+  else if (RUN_MODE === "sibling-check") console.log("Completed one same-game sibling check; temporary admin access was revoked.");
+  else if (RUN_MODE === "admin-check") console.log("Completed two bounded admin provision/cleanup cycles; no game scenario was run.");
+  else console.log("Completed one E2E admin provision diagnostic; temporary access was revoked.");
 }

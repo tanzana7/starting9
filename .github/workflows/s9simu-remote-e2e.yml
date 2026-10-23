@@ -8,6 +8,8 @@ on:
         required: true
         type: choice
         options:
+          - admin-diagnose
+          - admin-check
           - schedule-check
           - sibling-check
           - full

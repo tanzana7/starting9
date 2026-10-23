@@ -339,6 +339,43 @@ async function removeE2EAdmin(env, userId, username) {
   return Number(result?.meta?.changes || 0) === 1;
 }
 
+function classifyE2EAdminProvisionFailure(stage, error) {
+  const stageCodes = {
+    expired_marker_cleanup: "E2E_MARKER_CLEANUP_FAILED",
+    existing_identity_lookup: "E2E_IDENTITY_LOOKUP_FAILED",
+    register_request: "E2E_REGISTER_FAILED",
+    register_response: "E2E_REGISTER_RESPONSE_FAILED",
+    promote_admin: "E2E_ADMIN_PROMOTION_FAILED",
+    login_request: "E2E_LOGIN_FAILED",
+    login_cookie: "E2E_LOGIN_COOKIE_FAILED",
+    session_hash: "E2E_SESSION_HASH_FAILED",
+    stale_session_cleanup: "E2E_STALE_SESSION_CLEANUP_FAILED",
+    session_expiry_update: "E2E_SESSION_EXPIRY_FAILED",
+    session_readback: "E2E_SESSION_READBACK_FAILED",
+    response: "E2E_RESPONSE_FAILED"
+  };
+  const rawCode = String(error?.code || "");
+  const databaseCode = /^(?:SQLITE_(?:CONSTRAINT|ERROR|BUSY|LOCKED)(?:_[A-Z_]+)?|D1_ERROR_[A-Z_]+)$/.test(rawCode)
+    ? rawCode : "";
+  const message = String(error?.message || "");
+  const constraint = /UNIQUE constraint failed/i.test(message) ? "UNIQUE_CONSTRAINT"
+    : /FOREIGN KEY constraint failed/i.test(message) ? "FOREIGN_KEY_CONSTRAINT"
+      : /NOT NULL constraint failed/i.test(message) ? "NOT_NULL_CONSTRAINT"
+        : /CHECK constraint failed/i.test(message) ? "CHECK_CONSTRAINT"
+          : /no such (?:table|column)/i.test(message) ? "SCHEMA_MISMATCH" : "";
+  const errorClass = /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(String(error?.name || ""))
+    ? String(error.name) : "Error";
+  return {
+    ok: false,
+    code: "E2E_ADMIN_PROVISION_FAILED",
+    reasonCode: stageCodes[stage] || "E2E_PROVISION_STAGE_UNKNOWN",
+    stage,
+    errorClass,
+    ...(databaseCode ? { databaseCode } : {}),
+    ...(constraint ? { constraint } : {})
+  };
+}
+
 async function provisionE2EAdmin(request, env, ctx, input = {}) {
   // The Pages proxy deliberately removes Origin. The signed, run-scoped GitHub
   // Actions identity is the sole bootstrap authority; the ordinary admin
@@ -354,6 +391,7 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
   const match = authorization.match(/^Bearer ([A-Za-z0-9._~-]+)$/);
   if (!match) return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
   let runIdentity;
+  let stage = "expired_marker_cleanup";
   try {
     runIdentity = await verifyS9SimuRunToken(match[1]);
   } catch (error) {
@@ -367,22 +405,26 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
     const now = new Date();
     await removeExpiredE2ERunMarkers(env.AUTH_DB, now);
     username = runIdentity.username;
+    stage = "existing_identity_lookup";
     const previousRun = await env.AUTH_DB.prepare(
       "SELECT id FROM users WHERE username_normalized = ?1 LIMIT 1"
     ).bind(username).first();
     if (previousRun) return jsonResponse({ ok: false, code: "E2E_RUN_REPLAYED" }, 409, origin);
     const password = secureRandomHex(32);
     const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
+    stage = "register_request";
     const register = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/register", {
       method: "POST",
       headers: { Origin: origin, "Content-Type": "application/json", "CF-Connecting-IP": clientIp },
       body: JSON.stringify({ username, password, passwordConfirmation: password })
     }), env, ctx);
+    stage = "register_response";
     const registered = await register.json();
     if (register.status !== 201 || !registered?.user?.id) {
       return jsonResponse({ ok: false, code: "E2E_ADMIN_PROVISION_FAILED" }, 409, origin);
     }
     userId = String(registered.user.id);
+    stage = "promote_admin";
     const promoted = await env.AUTH_DB.prepare(
       "UPDATE users SET role = 'admin', updated_at = ?1 WHERE id = ?2 AND username = ?3 AND role = 'user'"
     ).bind(runIdentity.expiresAt, userId, username).run();
@@ -394,11 +436,13 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
     // Provisioning only grants the disposable identity. The returned cookie is
     // issued by the ordinary login endpoint and is then checked by the same
     // admin authorization boundary used by scenario mutations.
+    stage = "login_request";
     const login = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/login", {
       method: "POST",
       headers: { Origin: origin, "Content-Type": "application/json", "CF-Connecting-IP": clientIp },
       body: JSON.stringify({ username, password })
     }), env, ctx);
+    stage = "login_cookie";
     const cookie = readSessionCookie(login);
     if (login.status !== 200 || !cookie) {
       await removeE2EAdmin(env, userId, username);
@@ -406,10 +450,13 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
     }
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
     const token = cookie.slice(cookie.indexOf("=") + 1);
+    stage = "session_hash";
     const sessionHash = await hashSessionToken(decodeURIComponent(token));
+    stage = "stale_session_cleanup";
     await env.AUTH_DB.prepare(
       "DELETE FROM sessions WHERE user_id = ?1 AND token_hash <> ?2"
     ).bind(userId, sessionHash).run();
+    stage = "session_expiry_update";
     const shortened = await env.AUTH_DB.prepare(
       "UPDATE sessions SET expires_at = ?1 WHERE user_id = ?2 AND token_hash = ?3"
     ).bind(expiresAt.toISOString(), userId, sessionHash).run();
@@ -417,6 +464,7 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
       await removeE2EAdmin(env, userId, username);
       return jsonResponse({ ok: false, code: "E2E_ADMIN_SESSION_FAILED" }, 500, origin);
     }
+    stage = "session_readback";
     const activeSession = await env.AUTH_DB.prepare(
       "SELECT id FROM sessions WHERE token_hash = ?1 AND user_id = ?2 LIMIT 1"
     ).bind(sessionHash, userId).first();
@@ -424,15 +472,16 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
       await removeE2EAdmin(env, userId, username);
       return jsonResponse({ ok: false, code: "E2E_ADMIN_SESSION_FAILED" }, 500, origin);
     }
+    stage = "response";
     const response = jsonResponse({ ok: true, username, runId: runIdentity.runId,
       capabilityExpiresAt: runIdentity.expiresAt, sessionExpiresAt: expiresAt.toISOString() }, 201, origin);
     response.headers.set("Set-Cookie", withSessionExpiry(login.headers.get("Set-Cookie"), expiresAt));
     return response;
-  } catch {
+  } catch (error) {
     if (userId && username) {
       await removeE2EAdmin(env, userId, username).catch(() => false);
     }
-    return jsonResponse({ ok: false, code: "E2E_ADMIN_PROVISION_FAILED" }, 500, origin);
+    return jsonResponse(classifyE2EAdminProvisionFailure(stage, error), 500, origin);
   }
 }
 

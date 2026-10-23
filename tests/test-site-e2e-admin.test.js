@@ -235,10 +235,10 @@ test("E2E provisioning failures expose only a stage and allowlisted database dia
   t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
   const originalPrepare = f.env.AUTH_DB.prepare.bind(f.env.AUTH_DB);
   f.env.AUTH_DB.prepare = (sql) => {
-    if (sql.includes("substr(username, 1, 4) = 'e2e-'")) {
-      return { bind: () => ({ run: async () => {
-        const error = new Error("constraint details must never be returned: secret-value");
-        error.code = "SQLITE_ERROR";
+    if (sql === "SELECT id FROM users WHERE username_normalized = ?1 LIMIT 1") {
+      const error = new Error("constraint details must never be returned: secret-value");
+      error.code = "SQLITE_ERROR";
+      return { bind: () => ({ first: async () => {
         throw error;
       } }) };
     }
@@ -249,8 +249,8 @@ test("E2E provisioning failures expose only a stage and allowlisted database dia
   assert.deepEqual(result.payload, {
     ok: false,
     code: "E2E_ADMIN_PROVISION_FAILED",
-    reasonCode: "E2E_MARKER_CLEANUP_FAILED",
-    stage: "expired_marker_cleanup",
+    reasonCode: "E2E_IDENTITY_LOOKUP_FAILED",
+    stage: "existing_identity_lookup",
     errorClass: "Error",
     databaseCode: "SQLITE_ERROR"
   });
@@ -319,7 +319,7 @@ test("a stale identity collision fails closed without modifying the existing acc
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
 });
 
-test("an expired replay marker is deleted by the next authorized provisioning run", async (t) => {
+test("an expired replay tombstone with historical references is retained while a new proof provisions", async (t) => {
   const f = await fixture();
   t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
   const first = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
@@ -328,12 +328,24 @@ test("an expired replay marker is deleted by the next authorized provisioning ru
     method: "POST", body: { action: "cleanup" }, cookie: firstCookie
   });
   assert.equal(clean.payload.removed, false);
-  f.database.prepare("UPDATE users SET updated_at = '2000-01-01T00:00:00.000Z' WHERE username = ?")
-    .run(first.payload.username);
+  const marker = f.database.prepare("SELECT id FROM users WHERE username = ?").get(first.payload.username);
+  f.database.prepare("UPDATE users SET updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(marker.id);
+  f.database.prepare(`INSERT INTO test_games
+    (game_id, title, game_date, start_at, prediction_deadline_at, home_team, away_team,
+      created_by, created_at, updated_at)
+    VALUES ('historical-e2e-fixture', 'Historical E2E', '2026-10-24', '2026-10-24T09:00:00.000Z',
+      '2026-10-24T08:00:00.000Z', 'fighters', 'giants', ?, '2026-10-01', '2026-10-01')`)
+    .run(marker.id);
 
   const next = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
   assert.equal(next.response.status, 201);
-  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM users WHERE username = ?").get(first.payload.username).count, 0);
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM users WHERE username = ?").get(first.payload.username).count, 1);
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM test_games WHERE game_id = 'historical-e2e-fixture'").get().count, 1);
+  const nextCookie = (next.response.headers.get("Set-Cookie") || "").split(";", 1)[0];
+  const cleanupNext = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "cleanup" }, cookie: nextCookie
+  });
+  assert.equal(classifyE2ECleanupResult(cleanupNext.payload), "replay-blocked");
 });
 
 test("formal simulator schedule sync reads six games and reports each persistence stage", async (t) => {

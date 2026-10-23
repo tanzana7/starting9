@@ -1,10 +1,9 @@
 import { handleSimulatedNpbRequest } from "./simu-npb/source.js";
 import { TEST_TEAMS, TEST_TEAM_GROUPS } from "./simu-npb/teams.js";
-import { authorizeTestAdmin } from "./simu-admin-auth.js";
 
 export async function onRequest(context) {
   try {
-    return await handleSimulatedNpbRequest(context.request, context.env, { TEST_TEAMS, TEST_TEAM_GROUPS, authorizeAdmin: (request) => authorizeTestAdmin(request, context.env) });
+    return await handleSimulatedNpbRequest(context.request, context.env, { TEST_TEAMS, TEST_TEAM_GROUPS });
   } catch (error) {
     console.error(`[SIMU_NPB] code=${error?.code || "SOURCE_HANDLER_FAILED"}`);
     return Response.json({ ok: false, code: "SIMULATED_SOURCE_UNAVAILABLE" }, {

@@ -10,7 +10,7 @@ function simulatorFetch(requests) {
     const url = new URL(input);
     requests.push(url);
     const response = await handleSimulatedNpbRequest(new Request(url), {
-      SIMU_NPB_STATE: { async get(key) { return key === "lineup-state" ? "available" : null; } }
+      SIMU_NPB_STATE: { async get() { return "available"; } }
     }, { TEST_TEAMS, TEST_TEAM_GROUPS });
     return response;
   };

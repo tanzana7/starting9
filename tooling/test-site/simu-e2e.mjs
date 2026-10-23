@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { TEST_TEAM_GROUPS, TEST_TEAMS, testPredictionPlayerId } from "./teams.js";
 import { assertTestAuthConfig, TEST_AUTH_DB_ID, TEST_AUDIT_DB_ID } from "./isolation.js";
 import { classifyE2ECleanupResult } from "./cleanup-contract.js";
+import { readScenarioState } from "./scenario-state.js";
 import fs from "node:fs";
 
 const SITE_ORIGIN = "https://s9simu.pages.dev";
@@ -298,20 +299,21 @@ async function runSiblingCheck() {
       call(`/api/test/status${query}`),
       call(`/api/predictions/current${query}`, { admin: true })
     ]);
+    const state = readScenarioState(status.payload.game);
     prior.set(teamKey, {
       jobs: jobs.payload.jobs || [],
-      state: status.payload.game?.state || "scheduled",
+      ...state,
       prediction: Boolean(prediction.payload?.prediction)
     });
   }
   const hasPriorState = [...prior.values()].some((entry) => entry.jobs.length
-    || entry.prediction || entry.state !== "scheduled");
+    || entry.prediction || entry.effectiveState !== "scheduled");
   if (hasPriorState) {
     const giants = prior.get("giants");
     const tigers = prior.get("tigers");
-    const giantsPublished = giants?.state === "published"
+    const giantsPublished = giants?.effectiveState === "published"
       && giants.jobs.some((job) => job.job_type === "publish" && job.status === "completed");
-    const tigersClosed = tigers?.state === "prediction_closed"
+    const tigersClosed = tigers?.effectiveState === "prediction_closed"
       && tigers.jobs.some((job) => job.job_type === "prediction_close" && job.status === "completed")
       && !tigers.jobs.some((job) => job.job_type === "lineup_fetch" && ["claimed", "pending", "retry_wait"].includes(job.status));
     assert.ok(giantsPublished && tigersClosed,
@@ -333,8 +335,12 @@ async function runSiblingCheck() {
         call(`/api/predictions/current${teamQuery}`, { admin: true })
       ]);
       assert.equal(jobs.payload.jobs.length, 0, `${teamKey}: prior jobs removed`);
-      assert.equal(status.payload.game?.state, "scheduled", `${teamKey}: state reset`);
+      const state = readScenarioState(status.payload.game);
+      assert.equal(state.effectiveState, "scheduled", `${teamKey}: effective baseline state`);
+      assert.ok(state.rawState === null || state.rawState === "scheduled",
+        `${teamKey}: raw state is absent or explicitly scheduled`);
       assert.equal(Boolean(prediction.payload?.prediction), false, `${teamKey}: prediction removed`);
+      console.log(`S9SIMU_CLEANUP_BASELINE: ${JSON.stringify({ team: teamKey, rawState: state.rawState, effectiveState: state.effectiveState })}`);
     }
     console.log(`S9SIMU_SIBLING_FIXTURE_CLEANUP: ${JSON.stringify({ gameCode: game.game_code, scopedTeams: [group.homeKey, group.awayKey], verified: true })}`);
   }

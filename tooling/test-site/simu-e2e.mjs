@@ -8,7 +8,7 @@ import fs from "node:fs";
 const SITE_ORIGIN = "https://s9simu.pages.dev";
 const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
 const RUN_MODE = String(process.env.S9SIMU_MODE || "full").trim().toLowerCase();
-assert.ok(["full", "schedule-check", "sibling-check", "admin-diagnose", "admin-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, sibling-check, admin-diagnose, or admin-check");
+assert.ok(["full", "schedule-check", "job-only", "sibling-check", "admin-diagnose", "admin-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, job-only, sibling-check, admin-diagnose, or admin-check");
 
 const config = JSON.parse(fs.readFileSync(new URL("../../wrangler.test-auth.jsonc", import.meta.url), "utf8"));
 assertTestAuthConfig(config);
@@ -199,13 +199,17 @@ async function savePrediction(teamKey, internalGameId) {
 async function advance(teamKey, internalGameId, scenario, now, expectedState) {
   const query = `?internalGameId=${encodeURIComponent(internalGameId)}&testTeam=${teamKey}&simuNpb=1`;
   let last;
+  const pipelineDiagnosticsHistory = [];
   for (let pass = 0; pass < 6; pass += 1) {
     const result = await call(`/api/test/scenario${query}`, {
       method: "POST", admin: true,
       body: { scenario, stageOnly: true, now: now.toISOString() }
     });
     last = result.payload;
-    if (last?.game?.state === expectedState) return last.game;
+    if (last?.pipelineDiagnostics) pipelineDiagnosticsHistory.push(last.pipelineDiagnostics);
+    if (last?.game?.state === expectedState) {
+      return { ...last.game, pipelineDiagnosticsHistory };
+    }
   }
   const jobs = await call(`/api/test/jobs${query}`, { admin: true });
   throw new Error(`${teamKey}/${scenario} did not reach ${expectedState}: ${JSON.stringify({
@@ -331,6 +335,90 @@ async function runSiblingCheck() {
   })}`);
 }
 
+async function runLineupJobOnlyCheck() {
+  const physicalGames = await fetchSimulatorSchedule();
+  const game = physicalGames.find((item) => item.game_code === "g-t-1");
+  assert.ok(game, "job-only check requires the Giants/Tigers fixture");
+  const group = simulatorGroupForGame(game);
+  assert.equal(group.homeKey, "giants");
+  assert.equal(group.awayKey, "tigers");
+  const teams = [group.homeKey, group.awayKey];
+  const queryFor = (teamKey) => `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
+
+  // The one-game diagnostic must start from a known isolated fixture. Cleanup
+  // is scoped to this canonical game and is repeated in finally on failure.
+  for (const teamKey of teams) {
+    const [jobs, status, prediction] = await Promise.all([
+      call(`/api/test/jobs${queryFor(teamKey)}`, { admin: true }),
+      call(`/api/test/status${queryFor(teamKey)}`),
+      call(`/api/predictions/current${queryFor(teamKey)}`, { admin: true })
+    ]);
+    if (jobs.payload.jobs.length || prediction.payload?.prediction
+      || (status.payload.game?.state && status.payload.game.state !== "scheduled")) {
+      await call(`/api/test/scenario${queryFor(group.homeKey)}`, {
+        method: "POST", body: { scenario: "no-game" }, admin: true
+      });
+      break;
+    }
+  }
+
+  let checkError = null;
+  try {
+    for (const teamKey of teams) await savePrediction(teamKey, game.internal_game_id);
+    const startAt = new Date(game.start_at);
+    assert.ok(Number.isFinite(startAt.getTime()), "canonical game start time required");
+    const closedAt = new Date(startAt.getTime() - 59 * 60_000);
+    for (const teamKey of teams) {
+      const closed = await advance(teamKey, game.internal_game_id, "closed", closedAt, "prediction_closed");
+      assert.equal(closed.state, "prediction_closed");
+    }
+    const control = await call("/simu-npb/control", { method: "POST", body: { lineupState: "available" } });
+    assert.equal(control.payload.lineupState, "available");
+    const postGame = new Date(startAt.getTime() + 10 * 60_000);
+    const outcomes = [];
+
+    for (const teamKey of teams) {
+      const query = queryFor(teamKey);
+      const before = await call(`/api/test/jobs${query}`, { admin: true });
+      const contestId = before.payload.contestId;
+      assert.ok(contestId, `${teamKey}: canonical contest ID read-back`);
+      const lineupJobBefore = before.payload.jobs.find((job) => job.job_type === "lineup_fetch") || null;
+
+      const result = await advance(teamKey, game.internal_game_id, "lineup-captured", postGame, "lineup_ready");
+      assert.equal(result.state, "lineup_ready", `${teamKey}: workflow advances after execution`);
+      assert.equal(result.pipelineDiagnostics?.targetTeam, teamKey);
+      assert.equal(result.pipelineDiagnostics?.lineupPersisted, true);
+      const teamDiagnostics = result.pipelineDiagnosticsHistory.filter((entry) => entry.targetTeam === teamKey);
+      const lineupPlans = teamDiagnostics.flatMap((entry) => entry.lineupFetchPlans || [])
+        .filter((plan) => plan.targetTeam === teamKey);
+      assert.ok(lineupPlans.length, `${teamKey}: planner exposes the lineup_fetch decision`);
+      assert.equal(lineupPlans.some((plan) => plan.due), true, `${teamKey}: lineup_fetch is due at the simulated post-game time`);
+      assert.ok(lineupPlans.some((plan) => plan.shouldCreateJob) || lineupJobBefore,
+        `${teamKey}: planner creates the contest job or a prior contest-scoped job already exists`);
+      assert.ok(teamDiagnostics.some((entry) => entry.claimedJobTypes?.includes("lineup_fetch")), `${teamKey}: lineup job was claimed`);
+      assert.ok(teamDiagnostics.some((entry) => entry.claimedContestIds?.includes(contestId)), `${teamKey}: claim is scoped to its own contest`);
+      const after = await call(`/api/test/jobs${query}`, { admin: true });
+      assert.ok(after.payload.jobs.some((job) => job.job_type === "lineup_fetch" && job.status === "completed"),
+        `${teamKey}: lineup_fetch completed`);
+      outcomes.push({ team: teamKey, contestId, claimedOnlyOwnContest: true, lineupReady: true });
+    }
+    assert.equal(outcomes.length, 2);
+    console.log(`S9SIMU_LINEUP_JOB_ONLY: ${JSON.stringify({ physicalGame: game.internal_game_id, gameCode: game.game_code, outcomes })}`);
+  } catch (error) {
+    checkError = error;
+  } finally {
+    try {
+      await call(`/api/test/scenario${queryFor(group.homeKey)}`, {
+        method: "POST", body: { scenario: "no-game" }, admin: true
+      });
+    } catch (cleanupError) {
+      if (checkError) throw new AggregateError([checkError, cleanupError], "lineup job-only check and fixture cleanup failed");
+      throw cleanupError;
+    }
+  }
+  if (checkError) throw checkError;
+}
+
 function simulatorGroupForGame(game) {
   const match = String(game.game_code || "").match(/^g-t-(\d+)$/);
   assert.ok(match, "schedule parser should preserve each simulator game code");
@@ -357,6 +445,8 @@ try {
       diagnostics: lastScheduleDiagnostics,
       physicalGames: games.map(({ game_code, internal_game_id, home_team, away_team }) => ({ game_code, internal_game_id, home_team, away_team }))
     })}`);
+  } else if (RUN_MODE === "job-only") {
+    await runLineupJobOnlyCheck();
   } else if (RUN_MODE === "sibling-check") {
     await runSiblingCheck();
   } else {
@@ -444,6 +534,7 @@ if (RUN_MODE === "full") {
   assert.equal(temporaryUserRetained, false);
   if (RUN_MODE === "schedule-check") console.log("Completed one schedule-only diagnostic; temporary admin access was revoked.");
   else if (RUN_MODE === "sibling-check") console.log("Completed one same-game sibling check; temporary admin access was revoked.");
+  else if (RUN_MODE === "job-only") console.log("Completed one lineup-job lifecycle check; the bounded fixture and temporary admin access were cleaned up.");
   else if (RUN_MODE === "admin-check") console.log("Completed two bounded admin provision/cleanup cycles; no game scenario was run.");
   else console.log("Completed one E2E admin provision diagnostic; temporary access was revoked.");
 }

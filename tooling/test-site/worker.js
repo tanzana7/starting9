@@ -778,9 +778,20 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false, s
       stateBefore,
       lineupPersisted: Boolean(lineup?.final_lineup_revision_id),
       stateAfter: pipelineGame?.state || null,
-      claimedJobTypes: (pipeline.result?.claimReport?.claimed || []).map((job) => String(job.job_type || "")),
+      claimedJobTypes: (pipeline.result?.claimReport?.claimed || []).map((entry) => String(entry?.claimed?.job_type || entry?.job?.job_type || "")),
       claimedContestIds: [...new Set((pipeline.result?.claimReport?.claimed || [])
-        .map((job) => String(job.contest_id || "")).filter(Boolean))],
+        .map((entry) => String(entry?.claimed?.contest_id || entry?.job?.contest_id || "")).filter(Boolean))],
+      lineupFetchPlans: (pipeline.result?.mainPlan?.diagnostics || [])
+        .filter((entry) => entry?.stage === "lineup_fetch")
+        .map((entry) => ({
+          targetTeam: targetTeam.key,
+          state: entry.effectiveState || entry.persistedState || null,
+          due: entry.due === true,
+          shouldCreateJob: entry.shouldCreateJob === true,
+          blockedReason: entry.blockedReason || null,
+          reasonCode: entry.reasonCode || null,
+          existingStatus: entry.existingStatus || null
+        })),
       jobs: (jobs.results || []).map((job) => ({ jobType: job.job_type, status: job.status }))
     };
   }

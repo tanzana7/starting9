@@ -751,15 +751,18 @@ test("official simulator lineups finalize through the formal pipeline for all tw
   }
 
   simulatorState.value = "available";
+  let firstContestPublished = false;
   for (const context of contexts) {
     const postGame = new Date(new Date(context.game.start_at).getTime() + 10 * 60_000);
     let captured;
+    const pipelineDiagnosticsHistory = [];
     for (let attempt = 0; attempt < 6; attempt += 1) {
       const executionAt = new Date(postGame.getTime() + attempt * 60_000);
       captured = await f.request(`/api/test/scenario${context.query}`, {
         method: "POST", cookie,
         body: { scenario: "lineup-captured", stageOnly: true, now: executionAt.toISOString() }
       });
+      if (captured.payload.pipelineDiagnostics) pipelineDiagnosticsHistory.push(captured.payload.pipelineDiagnostics);
       if (captured.payload.game?.state === "lineup_ready") break;
     }
     assert.equal(captured.response.status, 200, `${context.teamKey}: official lineup fetch`);
@@ -769,6 +772,15 @@ test("official simulator lineups finalize through the formal pipeline for all tw
       ) ORDER BY job_type`).all(context.game.internal_game_id, context.game.internal_game_id, context.teamKey);
     assert.equal(captured.payload.game.state, "lineup_ready",
       `${context.teamKey}: formal transition ${JSON.stringify({ game: captured.payload.game, jobs: capturedJobs })}`);
+    const contestId = f.database.prepare(`SELECT contest_id FROM game_contests
+      WHERE internal_game_id=? AND target_team_key=?`).get(context.game.internal_game_id, context.teamKey)?.contest_id;
+    assert.ok(contestId, `${context.teamKey}: canonical contest identity`);
+    const teamDiagnostics = pipelineDiagnosticsHistory.filter((entry) => entry.targetTeam === context.teamKey);
+    assert.ok(teamDiagnostics.some((entry) => entry.lineupPersisted === true));
+    assert.ok(teamDiagnostics.some((entry) => entry.claimedJobTypes?.includes("lineup_fetch")));
+    assert.ok(teamDiagnostics.some((entry) => entry.claimedContestIds?.includes(contestId)));
+    assert.ok(teamDiagnostics.flatMap((entry) => entry.lineupFetchPlans || []).some((plan) =>
+      plan.targetTeam === context.teamKey && plan.due === true));
     const lineup = f.database.prepare(`SELECT revision.actual_lineup_json, current.final_lineup_revision_id
       FROM game_lineups AS current
       JOIN contest_lineup_revisions AS revision
@@ -789,6 +801,25 @@ test("official simulator lineups finalize through the formal pipeline for all tw
     assert.equal(jobs.some((job) => job.job_type === "lineup_fetch" && job.status === "completed"), true);
     assert.equal(jobs.some((job) => job.job_type === "lineup_finalize" && job.status === "completed"), true);
     assert.equal(jobs.every((job) => job.job_type === "lineup_fetch" || job.status === "completed"), true);
+
+    // Keep one sibling in a terminal contest state before processing the next
+    // team. The production pipeline tests separately verify real publish
+    // artifacts; this isolated case focuses on whether a terminal sibling's
+    // state can suppress the selected contest's formal lineup job.
+    if (!firstContestPublished && context.group.homeKey === context.teamKey) {
+      const contestId = f.database.prepare(`SELECT contest_id FROM game_contests
+        WHERE internal_game_id=? AND target_team_key=?`).get(context.game.internal_game_id, context.teamKey)?.contest_id;
+      for (const [from, to] of [["lineup_ready", "scored"], ["scored", "ranked"], ["ranked", "published"]]) {
+        await transitionV3State(f.env.AUTH_DB, {
+          internalGameId: context.game.internal_game_id,
+          contestId,
+          from,
+          to,
+          now: postGame
+        });
+      }
+      firstContestPublished = true;
+    }
   }
 
   // Cleanup uses the exact six canonical IDs returned by this schedule run;

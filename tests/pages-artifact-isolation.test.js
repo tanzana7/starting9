@@ -67,7 +67,7 @@ test("Simulated NPB Pages artifact excludes the duplicate Starting9 frontend and
   assert.equal(files.some((file) => file.startsWith("functions/")), false);
   for (const forbidden of [
     "contact.html", "fighters-player-master.js", "game-schedule-2026.json", "game-schedule.js",
-    "_headers", "_redirects", "index.html", "starting9/index.html", "test-scenarios.html",
+    "_headers", "index.html", "starting9/index.html", "test-scenarios.html",
     "scenario-controls.js", "script.js", "style.css", "auth.js", "players.js",
     "test-environment.css", "frontend/shared/team-context.js", "frontend/shared/site-context.js"
   ]) {
@@ -76,10 +76,13 @@ test("Simulated NPB Pages artifact excludes the duplicate Starting9 frontend and
   assert.ok(files.includes("assets/simu-npb.css"));
   assert.ok(files.includes("assets/simu-npb-lineup-editor.js"));
   assert.ok(files.includes("_routes.json"));
+  assert.ok(files.includes("_redirects"));
+  assert.match(readArtifact(testOutput, "_redirects"), /^\/starting9\/ https:\/\/starting9-app\.pages\.dev\/ 302$/m);
+  assert.match(readArtifact(testOutput, "_redirects"), /^\/teams\/\* https:\/\/starting9-app\.pages\.dev\/teams\/:splat 302$/m);
   assert.match(readArtifact(testOutput, "assets/simu-npb.css"), /\.test-notice/);
   assert.match(readArtifact(testOutput, "assets/simu-npb-lineup-editor.js"), /lineup/i);
   assert.equal(JSON.parse(readArtifact(testOutput, "_routes.json")).include.includes("/"), true);
-  assert.deepEqual(files.sort(), ["_routes.json", "assets/simu-npb-lineup-editor.js", "assets/simu-npb.css"]);
+  assert.deepEqual(files.sort(), ["_redirects", "_routes.json", "assets/simu-npb-lineup-editor.js", "assets/simu-npb.css"]);
   const generatedPagesProject = path.join(root, "dist", "test-site-project");
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "api", "[[path]].js")));
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "simu-npb", "[[path]].js")));

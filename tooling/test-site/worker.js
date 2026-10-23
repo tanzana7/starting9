@@ -121,13 +121,15 @@ function createProductEnvironment(env, { automaticOfficialLineup = false } = {})
   };
 }
 
-async function deleteScenarioRows(db) {
+async function deleteScenarioRows(db, internalGameId = INTERNAL_GAME_ID) {
+  const scopedInternalGameId = String(internalGameId || "").trim();
+  if (!scopedInternalGameId) throw new Error("Test cleanup requires an internal game identity");
   const [contestResult, scheduleResult] = await Promise.all([
-    db.prepare("SELECT contest_id FROM game_contests WHERE internal_game_id = ?1").bind(INTERNAL_GAME_ID).all(),
-    db.prepare("SELECT game_id FROM detected_game_schedule WHERE internal_game_id = ?1").bind(INTERNAL_GAME_ID).all()
+    db.prepare("SELECT contest_id FROM game_contests WHERE internal_game_id = ?1").bind(scopedInternalGameId).all(),
+    db.prepare("SELECT game_id FROM detected_game_schedule WHERE internal_game_id = ?1").bind(scopedInternalGameId).all()
   ]);
   const contestIds = [...new Set((contestResult.results || []).map((row) => String(row.contest_id || "").trim()).filter(Boolean))];
-  const gameIds = [...new Set([INTERNAL_GAME_ID,
+  const gameIds = [...new Set([scopedInternalGameId,
     ...(scheduleResult.results || []).map((row) => String(row.game_id || "").trim())
   ].filter(Boolean))];
   const statements = [];
@@ -139,13 +141,13 @@ async function deleteScenarioRows(db) {
       statements.push(db.prepare(`DELETE FROM ${table} WHERE attempt_id IN (
         SELECT attempt_id FROM contest_score_attempts
          WHERE internal_game_id = ?1 OR contest_id IN (${placeholders})
-      )`).bind(INTERNAL_GAME_ID, ...contestIds));
+      )`).bind(scopedInternalGameId, ...contestIds));
       continue;
     }
     if (table === "score_attempt_test_rows") {
       statements.push(db.prepare(`DELETE FROM ${table} WHERE attempt_id IN (
         SELECT attempt_id FROM score_attempts WHERE internal_game_id = ?1
-      )`).bind(INTERNAL_GAME_ID));
+      )`).bind(scopedInternalGameId));
       continue;
     }
     const columnsResult = await db.prepare(`PRAGMA table_info(${table})`).all();
@@ -155,7 +157,7 @@ async function deleteScenarioRows(db) {
     const values = [];
     if (columns.has("internal_game_id")) {
       predicates.push(`internal_game_id = ?${values.length + 1}`);
-      values.push(INTERNAL_GAME_ID);
+      values.push(scopedInternalGameId);
     }
     if (columns.has("game_id") && gameIds.length) {
       const first = values.length + 1;
@@ -174,7 +176,7 @@ async function deleteScenarioRows(db) {
   return { contestIds, gameIds };
 }
 
-async function deleteScenarioAuditRows(db, { contestIds = [] } = {}) {
+async function deleteScenarioAuditRows(db, { internalGameId = INTERNAL_GAME_ID, contestIds = [] } = {}) {
   // Test resets must not leave synthetic E2E audit entries carrying the
   // temporary operator identity after the corresponding game is re-seeded.
   const columnsResult = await db.prepare("PRAGMA table_info(game_automation_v3_audit)").all();
@@ -183,7 +185,7 @@ async function deleteScenarioAuditRows(db, { contestIds = [] } = {}) {
   const values = [];
   if (columns.has("internal_game_id")) {
     predicates.push(`internal_game_id = ?${values.length + 1}`);
-    values.push(INTERNAL_GAME_ID);
+    values.push(String(internalGameId || "").trim());
   }
   if (columns.has("contest_id") && contestIds.length) {
     const first = values.length + 1;
@@ -693,8 +695,8 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false, s
   let pipelineDiagnostics = null;
   let failureInjected = false;
   if (scenario === "no-game") {
-    const cleanupScope = await deleteScenarioRows(env.AUTH_DB);
-    await deleteScenarioAuditRows(env.AUDIT_DB, cleanupScope);
+    const cleanupScope = await deleteScenarioRows(env.AUTH_DB, INTERNAL_GAME_ID);
+    await deleteScenarioAuditRows(env.AUDIT_DB, { internalGameId: INTERNAL_GAME_ID, ...cleanupScope });
     return jsonResponse({ ok: true, scenario, game: null });
   }
 
@@ -885,8 +887,23 @@ async function handleTestControl(request, env, ctx) {
       ? scheduleSync.currentDay
       : (scheduleSync.results || []).find((result) => result?.date === date) || null;
     const games = await env.AUTH_DB.prepare(
-      `SELECT game_id, internal_game_id, game_date, start_at, home_team, away_team, game_code, game_status
-         FROM detected_game_schedule WHERE game_date = ?1 ORDER BY start_at, game_id LIMIT 6`
+      `SELECT schedule.game_id, schedule.internal_game_id, schedule.game_date, schedule.start_at,
+              schedule.home_team, schedule.away_team, schedule.game_code, schedule.game_status,
+              (SELECT game.internal_game_id FROM games AS game
+                WHERE game.internal_game_id = schedule.internal_game_id LIMIT 1) AS persisted_internal_game_id,
+              COALESCE((SELECT identifier.identifier_value FROM game_identifiers AS identifier
+                WHERE identifier.internal_game_id = schedule.internal_game_id AND identifier.provider='npb'
+                  AND identifier.identifier_type='npb_game_code' ORDER BY identifier.updated_at DESC, identifier.id DESC LIMIT 1),
+                (SELECT game.npb_game_code FROM games AS game
+                  WHERE game.internal_game_id = schedule.internal_game_id LIMIT 1)) AS provider_game_id,
+              (SELECT COUNT(*) FROM game_contests AS contest
+                WHERE contest.internal_game_id = schedule.internal_game_id) AS persisted_contest_count,
+              (SELECT group_concat(target_team_key, ',') FROM (
+                SELECT contest.target_team_key FROM game_contests AS contest
+                 WHERE contest.internal_game_id = schedule.internal_game_id ORDER BY contest.target_team_key
+              )) AS persisted_contest_teams
+         FROM detected_game_schedule AS schedule
+        WHERE schedule.game_date = ?1 ORDER BY schedule.start_at, schedule.game_id LIMIT 6`
     ).bind(date).all();
     const contests = await env.AUTH_DB.prepare(
       `SELECT COUNT(*) AS count FROM game_contests WHERE internal_game_id IN
@@ -942,8 +959,8 @@ async function handleTestControl(request, env, ctx) {
   }
   if (url.pathname === "/api/test/reset" && request.method === "POST") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
-    const cleanupScope = await deleteScenarioRows(env.AUTH_DB);
-    await deleteScenarioAuditRows(env.AUDIT_DB, cleanupScope);
+    const cleanupScope = await deleteScenarioRows(env.AUTH_DB, INTERNAL_GAME_ID);
+    await deleteScenarioAuditRows(env.AUDIT_DB, { internalGameId: INTERNAL_GAME_ID, ...cleanupScope });
     const game = await seedScenarioGame(env.AUTH_DB, 180);
     return jsonResponse({ ok: true, scenario: "open", game }, 200, origin);
   }
@@ -1012,19 +1029,38 @@ export default {
     const requestedGameId = url.searchParams.get("internalGameId") || "";
     if (url.searchParams.get("simuNpb") === "1" && requestedGameId) {
       const input = request.method === "POST" ? await request.clone().json().catch(() => null) : null;
-      const knownSimulatorGroup = TEST_TEAM_GROUPS.find((group) => group.internalGameId === requestedGameId);
-      const requestedTeamIsParticipant = knownSimulatorGroup
-        && [knownSimulatorGroup.homeKey, knownSimulatorGroup.awayKey].includes(key);
       const game = await env.AUTH_DB.prepare(
-        `SELECT games.internal_game_id FROM games
+        `SELECT games.internal_game_id,
+                COALESCE((SELECT identifier_value FROM game_identifiers
+                  WHERE internal_game_id = games.internal_game_id AND provider = 'npb'
+                    AND identifier_type = 'npb_game_code' ORDER BY updated_at DESC, id DESC LIMIT 1),
+                  games.npb_game_code) AS simulator_game_id,
+                game_contests.contest_id
+           FROM games
           JOIN game_contests ON game_contests.internal_game_id = games.internal_game_id
          WHERE games.internal_game_id = ?1 AND game_contests.target_team_key = ?2 LIMIT 1`
       ).bind(requestedGameId, key).first();
+      // Provider game identity belongs to the persisted schedule/game registry.
+      // The product-generated internal ID is intentionally unrelated to the
+      // static IDs in TEST_TEAM_GROUPS.
+      const codeMatch = String(game?.simulator_game_id || "").match(/^g-t-([1-6])$/);
+      const simulatorGroup = codeMatch ? TEST_TEAM_GROUPS[Number(codeMatch[1]) - 1] : null;
+      const requestedTeamIsParticipant = Boolean(simulatorGroup
+        && [simulatorGroup.homeKey, simulatorGroup.awayKey].includes(key));
       const cleaningMissingSimulatorFixture = !game
         && input?.scenario === "no-game"
-        && Boolean(requestedTeamIsParticipant);
+        // Cleanup is idempotent and remains limited to the exact UUID-shaped
+        // product ID supplied by this Test Site request.
+        && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestedGameId);
       if (!game && !cleaningMissingSimulatorFixture) {
-        return Response.json({ ok: false, code: "SIMULATED_GAME_NOT_FOUND" }, { status: 404 });
+        return Response.json({ ok: false, code: "SIMULATED_GAME_NOT_FOUND",
+          identity: { namespace: "internalGameId", found: false } }, { status: 404 });
+      }
+      const cleanupIsContestScoped = input?.scenario === "no-game" && Boolean(game?.contest_id);
+      if (game && (!simulatorGroup || !requestedTeamIsParticipant) && !cleanupIsContestScoped) {
+        return Response.json({ ok: false, code: "SIMULATED_GAME_NOT_FOUND",
+          identity: { namespace: "internalGameId->npb_game_code", found: true,
+            providerIdentityFound: Boolean(game.simulator_game_id), participantContestFound: Boolean(game.contest_id) } }, { status: 404 });
       }
       internalGameId = String(game?.internal_game_id || requestedGameId);
     }

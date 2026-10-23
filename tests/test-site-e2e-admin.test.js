@@ -535,6 +535,89 @@ test("parsed simulator roster IDs are trusted by the same Test prediction save p
   assert.equal(cleanup.payload.removed, false);
 });
 
+test("simulator provider identity resolves every persisted game, both contests, and game-scoped cleanup", async (t) => {
+  const f = await fixture();
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; f.restoreFetch(); f.database.close(); f.audit.close(); });
+  f.env.S9SIMU_ENABLED = "true";
+  f.env.S9SIMU_BASE_URL = "https://s9simu.pages.dev";
+  f.env.NPB_SOURCE = "simulator";
+  f.env.ENABLE_GAME_AUTOMATION_V3 = "true";
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== "https://s9simu.pages.dev") return originalFetch(input, init);
+    return handleSimulatedNpbRequest(new Request(url, init), {
+      SIMU_NPB_STATE: { async get() { return "pre-lineup"; } }
+    }, { TEST_TEAMS, TEST_TEAM_GROUPS });
+  };
+
+  const setup = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
+  assert.equal(setup.response.status, 201);
+  const cookie = (setup.response.headers.get("Set-Cookie") || "").split(";", 1)[0];
+  const scheduled = await f.request("/api/test/simu/schedule?testTeam=fighters", {
+    method: "POST", body: {}, cookie
+  });
+  assert.equal(scheduled.response.status, 200);
+  const games = scheduled.payload.physicalGames;
+  assert.equal(games.length, 6);
+  assert.equal(scheduled.payload.contestCount, 12);
+
+  const seenProviderIds = new Set();
+  const seenInternalIds = new Set();
+  for (const game of games) {
+    const providerGameId = String(game.game_code || "");
+    assert.match(providerGameId, /^g-t-[1-6]$/);
+    assert.ok(game.internal_game_id);
+    assert.equal(game.persisted_internal_game_id, game.internal_game_id);
+    assert.equal(game.provider_game_id, providerGameId);
+    assert.equal(game.persisted_contest_count, 2);
+    assert.notEqual(game.internal_game_id, providerGameId);
+    assert.equal(seenProviderIds.has(providerGameId), false);
+    assert.equal(seenInternalIds.has(game.internal_game_id), false);
+    seenProviderIds.add(providerGameId);
+    seenInternalIds.add(game.internal_game_id);
+
+    const index = Number(providerGameId.slice("g-t-".length)) - 1;
+    const group = TEST_TEAM_GROUPS[index];
+    const stored = f.database.prepare(`SELECT games.internal_game_id, games.npb_game_code,
+        (SELECT identifier_value FROM game_identifiers WHERE internal_game_id=games.internal_game_id
+          AND provider='npb' AND identifier_type='npb_game_code' ORDER BY updated_at DESC,id DESC LIMIT 1) AS provider_game_id,
+        COUNT(game_contests.contest_id) AS contest_count
+      FROM games LEFT JOIN game_contests USING (internal_game_id)
+      WHERE games.internal_game_id=? GROUP BY games.internal_game_id`).get(game.internal_game_id);
+    assert.equal(stored?.internal_game_id, game.internal_game_id);
+    assert.equal(stored?.provider_game_id || stored?.npb_game_code, providerGameId);
+    assert.equal(stored?.contest_count, 2);
+
+    for (const teamKey of [group.homeKey, group.awayKey]) {
+      const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
+      const roster = await f.request(`/api/game-day-roster${query}`, { cookie });
+      assert.equal(roster.response.status, 200, `${providerGameId}/${teamKey}: ${JSON.stringify(roster.payload)}`);
+      assert.equal(roster.payload.players.length, 15);
+      assert.ok(roster.payload.players.every((player) => player.teamCode === teamKey));
+    }
+  }
+  assert.equal(seenProviderIds.size, 6);
+  assert.equal(seenInternalIds.size, 6);
+
+  const first = games[0];
+  const otherTeam = TEST_TEAM_GROUPS[1].homeKey;
+  const crossed = await f.request(`/api/game-day-roster?internalGameId=${encodeURIComponent(first.internal_game_id)}&testTeam=${otherTeam}&simuNpb=1`, { cookie });
+  assert.equal(crossed.response.status, 404);
+  assert.equal(crossed.payload.code, "SIMULATED_GAME_NOT_FOUND");
+
+  const cleanupGame = games[1];
+  const cleanupGroup = TEST_TEAM_GROUPS[Number(cleanupGame.game_code.slice("g-t-".length)) - 1];
+  const cleanupQuery = `?internalGameId=${encodeURIComponent(cleanupGame.internal_game_id)}&testTeam=${cleanupGroup.homeKey}&simuNpb=1`;
+  const cleanup = await f.request(`/api/test/scenario${cleanupQuery}`, {
+    method: "POST", body: { scenario: "no-game" }, cookie
+  });
+  assert.equal(cleanup.response.status, 200);
+  assert.equal(cleanup.payload.scenario, "no-game");
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games WHERE internal_game_id=?").get(cleanupGame.internal_game_id).count, 0);
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games WHERE internal_game_id=?").get(games[0].internal_game_id).count, 1);
+});
+
 test("a published same-game sibling does not block the other contest's official lineup transition", async (t) => {
   const f = await fixture();
   const originalFetch = globalThis.fetch;

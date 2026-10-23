@@ -293,6 +293,58 @@ test("finalLineupAt後にlineup artifactがなければbounded late lineup_fetch
   assert.equal(plan.reasonCode, "LATE_LINEUP_FETCH_REQUIRED");
 });
 
+test("contest-scoped late lineup_fetch ignores a sibling game's published hints in either order", () => {
+  for (const teamKey of ["tigers", "giants"]) {
+    const target = {
+      ...game(),
+      npbGameCode: "g-t-1",
+      npbIdentityStatus: "resolved",
+      workflowState: "prediction_closed",
+      publication_status: "published",
+      published_at: "2026-08-04T09:02:30.000Z"
+    };
+    const plan = v3.buildStagePlan(v3.buildV3PlanningState({
+      game: target,
+      contestId: `contest-${teamKey}`,
+      persistedState: "prediction_closed",
+      now: new Date("2026-08-04T09:03:00.000Z")
+    }), "lineup_fetch");
+
+    assert.equal(plan.shouldCreateJob, true, `${teamKey}: sibling publication cannot suppress due work`);
+    assert.equal(plan.blocked, false, `${teamKey}: sibling publication is not a block`);
+    assert.equal(plan.reasonCode, "LATE_LINEUP_FETCH_REQUIRED", `${teamKey}: decision is scoped to current contest`);
+  }
+});
+
+test("contest-scoped current published state still suppresses lineup work", () => {
+  const plan = v3.buildStagePlan(v3.buildV3PlanningState({
+    game: { ...game(), workflowState: "published", publicationStatus: "published" },
+    contestId: "contest-current",
+    persistedState: "published",
+    now: new Date("2026-08-04T09:03:00.000Z")
+  }), "lineup_fetch");
+
+  assert.equal(plan.shouldCreateJob, false);
+  assert.equal(plan.reasonCode, "ALREADY_PUBLISHED");
+});
+
+test("legacy game-wide late lineup_fetch still stops for its own published game", () => {
+  const target = {
+    ...game(),
+    publicationStatus: "published",
+    publishedAt: "2026-08-04T09:02:30.000Z"
+  };
+  const plan = v3.buildStagePlan(v3.buildV3PlanningState({
+    game: target,
+    persistedState: "prediction_closed",
+    now: new Date("2026-08-04T09:03:00.000Z")
+  }), "lineup_fetch");
+
+  assert.equal(plan.shouldCreateJob, false);
+  assert.equal(plan.blocked, true);
+  assert.equal(plan.reasonCode, "ALREADY_PUBLISHED");
+});
+
 test("late lineup_fetchはstartAtから24時間を超えると明確にblockedになる", () => {
   const target = {
     ...game(),

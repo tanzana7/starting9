@@ -287,19 +287,35 @@ async function runSiblingCheck() {
   assert.equal(group.homeKey, "giants");
   assert.equal(group.awayKey, "tigers");
 
-  // Reset only the one physical game under test, and only when its own contest
-  // jobs show that an earlier authorized run left state behind.
-  let hasPriorState = false;
+  // A previous failed sibling run may leave exactly Giants=published and
+  // Tigers=prediction_closed. Only clean that known partial shape; never erase
+  // an unrelated or otherwise advanced Test fixture on this shared game.
+  const prior = new Map();
   for (const teamKey of [group.homeKey, group.awayKey]) {
     const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
-    const jobs = await call(`/api/test/jobs${query}`, { admin: true });
-    const status = await call(`/api/test/status${query}`);
-    const prediction = await call(`/api/predictions/current${query}`, { admin: true });
-    hasPriorState ||= jobs.payload.jobs.length > 0
-      || Boolean(prediction.payload?.prediction)
-      || (status.payload.game?.state && status.payload.game.state !== "scheduled");
+    const [jobs, status, prediction] = await Promise.all([
+      call(`/api/test/jobs${query}`, { admin: true }),
+      call(`/api/test/status${query}`),
+      call(`/api/predictions/current${query}`, { admin: true })
+    ]);
+    prior.set(teamKey, {
+      jobs: jobs.payload.jobs || [],
+      state: status.payload.game?.state || "scheduled",
+      prediction: Boolean(prediction.payload?.prediction)
+    });
   }
+  const hasPriorState = [...prior.values()].some((entry) => entry.jobs.length
+    || entry.prediction || entry.state !== "scheduled");
   if (hasPriorState) {
+    const giants = prior.get("giants");
+    const tigers = prior.get("tigers");
+    const giantsPublished = giants?.state === "published"
+      && giants.jobs.some((job) => job.job_type === "publish" && job.status === "completed");
+    const tigersClosed = tigers?.state === "prediction_closed"
+      && tigers.jobs.some((job) => job.job_type === "prediction_close" && job.status === "completed")
+      && !tigers.jobs.some((job) => job.job_type === "lineup_fetch" && ["claimed", "pending", "retry_wait"].includes(job.status));
+    assert.ok(giantsPublished && tigersClosed,
+      "SIBLING_FIXTURE_CLEANUP_UNSAFE: refusing to remove a Test fixture that is not the known partial Giants-published/Tigers-closed run");
     const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${group.homeKey}&simuNpb=1`;
     const cleared = await call(`/api/test/scenario${query}`, {
       method: "POST", body: { scenario: "no-game" }, admin: true
@@ -309,6 +325,18 @@ async function runSiblingCheck() {
     game = physicalGames.find((item) => item.game_code === "g-t-1");
     assert.ok(game);
     group = simulatorGroupForGame(game);
+    for (const teamKey of [group.homeKey, group.awayKey]) {
+      const teamQuery = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
+      const [jobs, status, prediction] = await Promise.all([
+        call(`/api/test/jobs${teamQuery}`, { admin: true }),
+        call(`/api/test/status${teamQuery}`),
+        call(`/api/predictions/current${teamQuery}`, { admin: true })
+      ]);
+      assert.equal(jobs.payload.jobs.length, 0, `${teamKey}: prior jobs removed`);
+      assert.equal(status.payload.game?.state, "scheduled", `${teamKey}: state reset`);
+      assert.equal(Boolean(prediction.payload?.prediction), false, `${teamKey}: prediction removed`);
+    }
+    console.log(`S9SIMU_SIBLING_FIXTURE_CLEANUP: ${JSON.stringify({ gameCode: game.game_code, scopedTeams: [group.homeKey, group.awayKey], verified: true })}`);
   }
 
   for (const teamKey of [group.homeKey, group.awayKey]) await savePrediction(teamKey, game.internal_game_id);

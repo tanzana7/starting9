@@ -714,15 +714,19 @@ test("a published same-game sibling does not block the other contest's official 
   await captureUntilReady(contexts[0]);
   const giantsContest = f.database.prepare("SELECT contest_id FROM game_contests WHERE internal_game_id = ? AND target_team_key = 'giants'")
     .get(game.internal_game_id).contest_id;
-  // This test isolates whether a terminal sibling state blocks the other
-  // contest's official-lineup transition. Use the production transition
-  // primitive to arrange that state; publication artifact semantics are
-  // covered by the full formal pipeline tests in contest-formal-pipeline.
+  // Arrange the terminal sibling through the canonical transition primitive
+  // and published contest artifact. The Tigers request below still exercises
+  // the real planner, job insertion, claim and executor path.
   for (const [from, to] of [["lineup_ready", "scored"], ["scored", "ranked"], ["ranked", "published"]]) {
     await transitionV3State(f.env.AUTH_DB, {
       internalGameId: game.internal_game_id, contestId: giantsContest, from, to, now: postGame
     });
   }
+  f.database.prepare(`UPDATE contest_ranking_games SET publication_status = 'published', published_at = ?
+    WHERE internal_game_id = ? AND contest_id = ?`).run(postGame.toISOString(), game.internal_game_id, giantsContest);
+  assert.ok(f.database.prepare(`SELECT 1 FROM contest_ranking_games
+    WHERE internal_game_id = ? AND contest_id = ? AND publication_status = 'published'`)
+    .get(game.internal_game_id, giantsContest), "Giants publication is persisted only on its contest artifact");
   const siblingBefore = f.database.prepare(`SELECT state FROM contest_automation_v3_state
     WHERE internal_game_id = ? AND contest_id = (SELECT contest_id FROM game_contests
       WHERE internal_game_id = ? AND target_team_key = 'tigers')`).get(game.internal_game_id, game.internal_game_id);

@@ -70,8 +70,29 @@ test("Test Site Pages artifact retains scenario UI, controls, banner, and shared
   assert.ok(files.includes("scenario-controls.js"));
   assert.ok(files.includes("index.html"));
   assert.ok(files.includes("script.js"));
+  assert.ok(files.includes("style.css"));
+  assert.ok(files.includes("test-environment.css"));
+  assert.ok(files.includes("assets/starting9-header.png"));
+  assert.ok(files.includes("assets/icons/icon-512.png"));
+  assert.ok(files.includes("frontend/shared/team-context.js"));
+  assert.ok(files.includes("frontend/shared/production-team.js"));
+  assert.ok(files.includes("frontend/shared/site-context.js"));
   assert.match(readArtifact(testOutput, "test-scenarios.html"), /Scenario/i);
   assert.match(readArtifact(testOutput, "scenario-controls.js"), /\/api\/test\/scenario/);
   assert.match(readArtifact(testOutput, "index.html"), /TEST ENVIRONMENT/);
-  assert.match(readArtifact(testOutput, "frontend/shared/production-team.js"), /Starting9TestTeam/);
+  assert.match(readArtifact(testOutput, "index.html"), /test-environment\.css/);
+  assert.match(readArtifact(testOutput, "index.html"), /frontend\/shared\/site-context\.js/);
+  assert.doesNotMatch(readArtifact(testOutput, "index.html"), /testTeamSelector/);
+  assert.equal(
+    readArtifact(testOutput, "frontend/shared/production-team.js"),
+    fs.readFileSync(path.join(root, "frontend/shared/production-team.js"), "utf8"),
+    "Test Site must reuse the unmodified Production team selector and theme bootstrap"
+  );
+  assert.equal(readArtifact(testOutput, "style.css"), fs.readFileSync(path.join(root, "style.css"), "utf8"));
+  assert.match(readArtifact(testOutput, "frontend/shared/site-context.js"), /s9_test_source=simu-npb/);
+  assert.doesNotMatch(readArtifact(testOutput, "script.js"), /https:\/\/starting9-app\.pages\.dev/);
+  const generatedPagesProject = path.join(root, "dist", "test-site-project");
+  assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "api", "[[path]].js")));
+  assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "simu-npb", "[[path]].js")));
+  assert.equal(JSON.parse(readArtifact(generatedPagesProject, "wrangler.jsonc")).pages_build_output_dir, "../test-site");
 });

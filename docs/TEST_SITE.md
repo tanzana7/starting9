@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`s9simu.pages.dev` is an isolated environment for exercising the existing Starting9 public UI, authentication, prediction, lineup, scoring, ranking, publication, and admin paths with synthetic data. It is not a mock-only UI and must not use production records.
+`s9simu.pages.dev` is an isolated simulated NPB source site. Its root, schedule, team, and game pages render the same six-game, twelve-team fixture used by the machine-readable schedule and existing parser-compatible roster/lineup pages. The former Starting9 Test public UI remains available at `/starting9/`; API, admin, and E2E routes remain unchanged. The site must not use production records.
 
 ## Resource boundary
 
@@ -15,6 +15,8 @@
 `tooling/test-site/isolation.js` and the config tests fail closed if test identity is missing or a production database ID is bound. The Pages API proxy chooses an exact Auth Worker origin from the explicit `SITE_ENVIRONMENT`; it never accepts an arbitrary URL.
 
 ## Synthetic scenario controls
+
+The human-facing source site is read-only and has no Starting9 login or pipeline controls. `/simu-npb/control` remains a test-only endpoint used by the existing authorized E2E workflow; it is not linked from the public source pages. The parser-facing NPB-shaped schedule, roster, and lineup endpoints remain unchanged.
 
 `node tooling/test-site/simu-e2e.mjs` runs the deployed 12-team simulator flow only from the manually dispatched `S9simu Remote E2E` workflow on `main`. The workflow requests a short-lived GitHub Actions OIDC token with audience `starting9-simu-e2e`; the Test Worker verifies GitHub's signature and pins the repository ID, main ref, workflow path, event type, and token time window before creating a run-derived, one-time E2E admin identity. A duplicate workflow proof is rejected by the reserved identity's unique username. The issued admin session expires after 30 minutes and is revoked during cleanup. Successful runs retain only the demoted ranking identity; failed runs retain a disabled replay marker until the OIDC proof expires, then the next authorized run removes that expired marker. No persistent setup secret, Cloudflare credential, or production account is used by the workflow.
 

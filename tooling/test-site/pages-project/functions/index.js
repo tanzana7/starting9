@@ -1,0 +1,14 @@
+import { handleSimulatedNpbRequest } from "./simu-npb/source.js";
+import { TEST_TEAMS, TEST_TEAM_GROUPS } from "./simu-npb/teams.js";
+
+export async function onRequest(context) {
+  try {
+    return await handleSimulatedNpbRequest(context.request, context.env, { TEST_TEAMS, TEST_TEAM_GROUPS });
+  } catch (error) {
+    console.error(`[SIMU_NPB] code=${error?.code || "SOURCE_HANDLER_FAILED"}`);
+    return Response.json({ ok: false, code: "SIMULATED_SOURCE_UNAVAILABLE" }, {
+      status: 500,
+      headers: { "Cache-Control": "no-store" }
+    });
+  }
+}

@@ -37,7 +37,7 @@ for (const file of TEST_SITE_PAGE_FILES) {
 }
 const routeManifestPath = path.join(output, "_routes.json");
 const routeManifest = JSON.parse(fs.readFileSync(routeManifestPath, "utf8"));
-routeManifest.include = [...new Set([...(routeManifest.include || []), "/simu-npb/*"])];
+routeManifest.include = [...new Set([...(routeManifest.include || []), "/", "/simu-npb/*"])];
 fs.writeFileSync(routeManifestPath, `${JSON.stringify(routeManifest, null, 2)}\n`);
 for (const file of testOnlyFiles) {
   const source = path.join(testOnlyDirectory, file);
@@ -52,6 +52,9 @@ for (const directory of SHARED_PAGE_DIRECTORIES.filter((name) => name !== "funct
 const testContextSource = path.join(testOnlyDirectory, "team-context.js");
 if (!fs.existsSync(testContextSource)) throw new Error("required Test Site team context bootstrap missing");
 fs.copyFileSync(testContextSource, path.join(output, "frontend", "shared", "site-context.js"));
+const simulatorStyles = path.join(testOnlyDirectory, "simu-npb.css");
+if (!fs.existsSync(simulatorStyles)) throw new Error("required Simulated NPB stylesheet missing");
+fs.copyFileSync(simulatorStyles, path.join(output, "assets", "simu-npb.css"));
 // A previous build version placed Functions under the static output. Remove
 // only that generated artifact so it cannot become a downloadable asset.
 fs.rmSync(path.join(output, "functions"), { recursive: true, force: true });
@@ -89,6 +92,11 @@ fs.writeFileSync(path.join(output, "test-environment.css"), `
   overflow-wrap: anywhere;
 }
 `);
+const starting9AppDirectory = path.join(output, "starting9");
+fs.mkdirSync(starting9AppDirectory, { recursive: true });
+const starting9App = fs.readFileSync(path.join(output, "index.html"), "utf8")
+  .replace("<head>", '<head><base href="/">');
+fs.writeFileSync(path.join(starting9AppDirectory, "index.html"), starting9App);
 for (const team of Object.values(TEST_TEAMS)) {
   const directory = path.join(output, "teams", team.slug);
   fs.mkdirSync(directory, { recursive: true });
@@ -106,6 +114,7 @@ const simulatorFunctionOutput = path.join(pagesProject, "functions", "simu-npb")
 fs.mkdirSync(simulatorFunctionOutput, { recursive: true });
 fs.copyFileSync(path.join(simulatorSourceDirectory, "source.js"), path.join(simulatorFunctionOutput, "source.js"));
 fs.copyFileSync(path.join(simulatorFunctionsDirectory, "[[path]].js"), path.join(simulatorFunctionOutput, "[[path]].js"));
+fs.copyFileSync(path.join(simulatorFunctionsDirectory, "..", "index.js"), path.join(pagesProject, "functions", "index.js"));
 const simulatorTeamModule = `export const TEST_TEAMS = ${JSON.stringify(TEST_TEAMS)};\nexport const TEST_TEAM_GROUPS = ${JSON.stringify(TEST_TEAM_GROUPS)};\n`;
 fs.writeFileSync(path.join(simulatorFunctionOutput, "teams.js"), simulatorTeamModule);
 const pagesConfigPath = path.join(root, "tooling", "test-site", "pages-project", "wrangler.jsonc");

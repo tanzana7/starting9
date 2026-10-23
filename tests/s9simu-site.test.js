@@ -149,3 +149,69 @@ test("the generated Test Pages build includes the simulator routes but productio
   assert.equal(productionRoutes.include.includes("/simu-npb/*"), false);
   assert.doesNotMatch(productionBuilder, /simu-npb|s9simu\.pages\.dev/);
 });
+
+test("Simulated NPB portal exposes all six fixture games and twelve team pages without Starting9 controls", async () => {
+  const date = simulatorGameDate();
+  const root = await sourceRequest("/");
+  assert.equal(root.status, 200);
+  const home = await root.text();
+  assert.match(home, /SIMULATED NPB · TEST DATA ONLY/);
+  assert.match(home, /<h1>Simulated NPB<\/h1>/);
+  assert.match(home, new RegExp(date));
+  assert.equal((home.match(/class="game-card"/g) || []).length, 6);
+  assert.equal((home.match(/class="team-link"/g) || []).length, 12);
+  assert.doesNotMatch(home, /lineup-control|ログイン|予想する|リセット/);
+
+  const schedule = await sourceRequest("/simu-npb/schedule");
+  assert.equal(schedule.status, 200);
+  const scheduleHtml = await schedule.text();
+  const games = (await (await sourceRequest(`/simu-npb/api/public/games?date=${date}&team=all`)).json()).games;
+  assert.equal((scheduleHtml.match(/class="game-card"/g) || []).length, 6);
+  for (const game of games) {
+    assert.match(scheduleHtml, new RegExp(`Fixture ID:[\\s\\S]{0,40}${game.npbGameCode}`));
+    assert.match(scheduleHtml, new RegExp(game.venue));
+  }
+  assert.equal(new Set(games.flatMap((game) => [game.homeKey, game.awayKey])).size, 12);
+
+  const teamsPage = await sourceRequest("/simu-npb/teams");
+  assert.equal((await teamsPage.text()).match(/class="team-link"/g)?.length, 12);
+  for (const teamKey of TEST_TEAM_KEYS) {
+    const response = await sourceRequest(`/simu-npb/team/${teamKey}`);
+    assert.equal(response.status, 200, teamKey);
+    const html = await response.text();
+    assert.match(html, /SIMULATED NPB · TEST DATA ONLY/);
+    assert.match(html, new RegExp(`<h5>${TEST_TEAMS[teamKey].displayName}<\\/h5>`));
+    assert.equal((html.match(/data-player-id="npb:/g) || []).length, 15, teamKey);
+    assert.match(html, /背番号/);
+    assert.match(html, /選手ID/);
+  }
+});
+
+test("Simulated NPB game detail renders both fixture lineups and keeps the parser source contract", async () => {
+  const date = simulatorGameDate();
+  const games = (await (await sourceRequest(`/simu-npb/api/public/games?date=${date}&team=all`)).json()).games;
+  assert.equal(games.length, 6);
+  for (const game of games) {
+    assert.ok(game.npbGameCode);
+    const response = await sourceRequest(`/simu-npb/game/${game.npbGameCode}`);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, new RegExp(`data-game-code="${game.npbGameCode}"`));
+    assert.match(html, new RegExp(`data-away-team="${game.awayTeam}"`));
+    assert.match(html, new RegExp(`data-home-team="${game.homeTeam}"`));
+    assert.equal((html.match(/data-lineup-team=/g) || []).length, 0, "unannounced fixture must not expose lineup tables");
+  }
+
+  const available = await sourceRequest(`/simu-npb/game/${games[0].npbGameCode}`, { state: "available" });
+  const html = await available.text();
+  assert.equal((html.match(/data-lineup-team=/g) || []).length, 2);
+  assert.equal((html.match(/<tbody>/g) || []).length, 2);
+  assert.equal((html.match(/<tbody>[\s\S]*?<\/tbody>/g) || []).join("").match(/<tr>/g)?.length, 18);
+  for (const teamKey of [games[0].homeKey, games[0].awayKey]) {
+    const path = `/simu-npb/scores/${date.slice(0, 4)}/${date.slice(5, 7)}${date.slice(8, 10)}/${games[0].npbGameCode}/?team=${teamKey}`;
+    const parsed = await parseSimulatorResponse(await sourceRequest(path, { state: "available" }), { mode: "lineup", team: teamKey });
+    assert.equal(parsed.ok, true, teamKey);
+    assert.equal(parsed.payload.lineup.length, 9, teamKey);
+    assert.ok(parsed.payload.lineup.every((player) => player.playerName.includes(TEST_TEAMS[teamKey].shortName)));
+  }
+});

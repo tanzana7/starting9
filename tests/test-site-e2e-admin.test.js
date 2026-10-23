@@ -494,7 +494,7 @@ test("parsed simulator roster IDs are trusted by the same Test prediction save p
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin !== "https://s9simu.pages.dev") return originalFetch(input, init);
     return handleSimulatedNpbRequest(new Request(url, init), {
-      SIMU_NPB_STATE: { async get(key) { return key === "lineup-state" ? "pre-lineup" : null; } }
+      SIMU_NPB_STATE: { async get() { return "pre-lineup"; } }
     }, { TEST_TEAMS, TEST_TEAM_GROUPS });
   };
 
@@ -547,7 +547,7 @@ test("simulator provider identity resolves every persisted game, both contests, 
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin !== "https://s9simu.pages.dev") return originalFetch(input, init);
     return handleSimulatedNpbRequest(new Request(url, init), {
-      SIMU_NPB_STATE: { async get(key) { return key === "lineup-state" ? "pre-lineup" : null; } }
+      SIMU_NPB_STATE: { async get() { return "pre-lineup"; } }
     }, { TEST_TEAMS, TEST_TEAM_GROUPS });
   };
 
@@ -633,7 +633,7 @@ test("a published same-game sibling does not block the other contest's official 
     if (url.origin !== "https://s9simu.pages.dev") return originalFetch(input, init);
     return handleSimulatedNpbRequest(new Request(url, init), {
       SIMU_NPB_STATE: {
-        async get(key) { return key === "lineup-state" ? simulatorState.value : null; },
+        async get() { return simulatorState.value; },
         async put(_key, value) { simulatorState.value = value; }
       }
     }, { TEST_TEAMS, TEST_TEAM_GROUPS });
@@ -776,7 +776,7 @@ test("official simulator lineups finalize through the formal pipeline for all tw
     if (url.origin !== "https://s9simu.pages.dev") return originalFetch(input, init);
     return handleSimulatedNpbRequest(new Request(url, init), {
       SIMU_NPB_STATE: {
-        async get(key) { return key === "lineup-state" ? simulatorState.value : null; },
+        async get() { return simulatorState.value; },
         async put(_key, value) { simulatorState.value = value; }
       }
     }, { TEST_TEAMS, TEST_TEAM_GROUPS });

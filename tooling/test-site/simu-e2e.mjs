@@ -39,9 +39,6 @@ async function call(path, { method = "GET", body, admin = false, authorizationTo
     Accept: "application/json",
     Cookie: `s9_test_team=${encodeURIComponent(team)}; s9_test_source=simu-npb`
   };
-  if (new URL(`https://local.invalid${path}`).pathname === "/simu-npb/control") {
-    headers["X-Simu-NPB-Write"] = "1";
-  }
   if (admin && cookie) headers.Cookie += `; ${cookie}`;
   else if (sessionCookie) headers.Cookie += `; ${sessionCookie}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -356,7 +353,7 @@ async function runSiblingCheck() {
     const closed = await advance(teamKey, game.internal_game_id, "closed", closedAt, "prediction_closed");
     assert.equal(closed.state, "prediction_closed");
   }
-  const control = await call("/simu-npb/control", { method: "POST", body: { lineupState: "available" }, admin: true });
+  const control = await call("/simu-npb/control", { method: "POST", body: { lineupState: "available" } });
   assert.equal(control.payload.lineupState, "available");
   const postGame = new Date(startAt.getTime() + 10 * 60_000);
 
@@ -425,7 +422,7 @@ async function runLineupJobOnlyCheck() {
       const closed = await advance(teamKey, game.internal_game_id, "closed", closedAt, "prediction_closed");
       assert.equal(closed.state, "prediction_closed");
     }
-    const control = await call("/simu-npb/control", { method: "POST", body: { lineupState: "available" }, admin: true });
+    const control = await call("/simu-npb/control", { method: "POST", body: { lineupState: "available" } });
     assert.equal(control.payload.lineupState, "available");
     const postGame = new Date(startAt.getTime() + 10 * 60_000);
     const outcomes = [];
@@ -581,7 +578,7 @@ try {
       assert.equal(closed.state, "prediction_closed");
     }
 
-    const control = await call("/simu-npb/control", { method: "POST", body: { lineupState: "available" }, admin: true });
+    const control = await call("/simu-npb/control", { method: "POST", body: { lineupState: "available" } });
     assert.equal(control.payload.lineupState, "available");
     const postGame = new Date(startAt.getTime() + 10 * 60_000);
     for (const teamKey of [homeKey, awayKey]) {

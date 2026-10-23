@@ -49,61 +49,46 @@ for (const directory of SHARED_PAGE_DIRECTORIES.filter((name) => name !== "funct
   if (!fs.existsSync(source)) throw new Error(`required Pages directory missing: ${directory}`);
   fs.cpSync(source, path.join(output, directory), { recursive: true, force: true });
 }
-const testTeamPayload = JSON.stringify(Object.fromEntries(Object.entries(TEST_TEAMS)
-  .map(([key, team]) => [key, {
-    key: team.key, slug: team.slug, displayName: team.displayName, shortName: team.shortName,
-    playerTeamId: team.playerTeamId, providerTeamCode: team.providerTeamCode,
-    officialRosterCode: team.officialRosterCode, league: team.league,
-    aliases: team.aliases, shareHashtags: team.shareHashtags, branding: team.branding,
-    logo: team.logo, icon: team.icon
-  }])));
-const testTeamBootstrap = `const teams = ${testTeamPayload};
-const routeSlug = window.location.pathname.match(/^\\/teams\\/([a-z-]+)\\/?$/)?.[1] || "";
-const routeKey = Object.keys(teams).find((candidate) => teams[candidate].slug === routeSlug) || "";
-const requested = new URLSearchParams(window.location.search).get("testTeam");
-const key = routeSlug ? routeKey : requested === null ? "fighters" : Object.hasOwn(teams, requested) ? requested : "";
-if (!key) throw new Error("Unknown Test Site team route");
-document.cookie = \`s9_test_team=\${key}; Path=/; SameSite=Lax; Secure\`;
-document.cookie = "s9_test_source=simu-npb; Path=/; SameSite=Lax; Secure";
-window.Starting9TestTeam = key;
-window.Starting9TargetTeam = window.Starting9TeamContext.defineTeamContext(teams[key]);
-window.Starting9TeamContext.applyBranding(document.documentElement, window.Starting9TargetTeam);
-`;
-fs.writeFileSync(path.join(output, "frontend", "shared", "production-team.js"), testTeamBootstrap);
+const testContextSource = path.join(testOnlyDirectory, "team-context.js");
+if (!fs.existsSync(testContextSource)) throw new Error("required Test Site team context bootstrap missing");
+fs.copyFileSync(testContextSource, path.join(output, "frontend", "shared", "site-context.js"));
 // A previous build version placed Functions under the static output. Remove
 // only that generated artifact so it cannot become a downloadable asset.
 fs.rmSync(path.join(output, "functions"), { recursive: true, force: true });
 
-const teamOptions = Object.entries(TEST_TEAMS).map(([key, team]) =>
-  `<option value="${key}">${team.displayName}</option>`).join("");
-const banner = `<div role="status" aria-label="テスト環境" style="padding:.55rem 1rem;background:#9d1c1c;color:#fff;text-align:center;font-weight:800">TEST ENVIRONMENT · synthetic data only</div><nav aria-label="Test Site team"><label for="testTeamSelector">球団</label> <select id="testTeamSelector">${teamOptions}</select></nav>`;
+const banner = '<div class="test-environment-banner" role="status" aria-label="テスト環境">TEST ENVIRONMENT · synthetic data only</div>';
 for (const file of fs.readdirSync(output).filter((name) => name.endsWith(".html"))) {
   const target = path.join(output, file);
   let html = fs.readFileSync(target, "utf8");
   html = html.replaceAll("https://starting9-app.pages.dev", "https://s9simu.pages.dev");
   if (file !== "test-scenarios.html") {
-    if (!html.includes("frontend/shared/team-context.js")) {
-      html = html.replace("</head>", '<script defer src="frontend/shared/team-context.js?v=test-site-12-teams"></script><script defer src="frontend/shared/production-team.js?v=test-site-12-teams"></script></head>');
+    html = html.replace("</head>", '<link rel="stylesheet" href="/test-environment.css?v=standard-ui-1"></head>');
+    // Keep the production Team Context and selector intact. The Test Site only
+    // adds the cookies its isolated API proxy needs before production scripts run.
+    const contextScript = /(<script\s+defer\s+src="(?:\.\/)?frontend\/shared\/team-context\.js[^"]*"><\/script>)/i;
+    if (contextScript.test(html)) {
+      html = html.replace(contextScript, '$1<script defer src="/frontend/shared/site-context.js?v=standard-ui-1"></script>');
     }
     html = html.replace(/<body([^>]*)>/i, `<body$1>${banner}`);
   }
   fs.writeFileSync(target, html);
 }
-const selectorScript = `const selector = document.querySelector("#testTeamSelector");
-if (selector) {
-  selector.value = window.Starting9TestTeam || "fighters";
-  selector.addEventListener("change", () => {
-    const key = selector.value;
-    const teams = ${testTeamPayload};
-    if (!Object.hasOwn(teams, key)) return;
-    window.location.assign(key === "fighters" ? "/" : \`/teams/\${teams[key].slug}/\`);
-  });
-}`;
-for (const file of fs.readdirSync(output).filter((name) => name.endsWith(".html") && name !== "test-scenarios.html")) {
-  const target = path.join(output, file);
-  const html = fs.readFileSync(target, "utf8");
-  fs.writeFileSync(target, html.replace("</body>", `<script>${selectorScript}</script></body>`));
+fs.writeFileSync(path.join(output, "test-environment.css"), `
+.test-environment-banner {
+  box-sizing: border-box;
+  width: 100vw;
+  max-width: 100vw;
+  padding: .55rem clamp(1rem, 4vw, 2rem);
+  color: #fff;
+  background: #9d1c1c;
+  text-align: center;
+  font-weight: 800;
+  font-size: clamp(.8rem, 3.5vw, 1rem);
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
+`);
 for (const team of Object.values(TEST_TEAMS)) {
   const directory = path.join(output, "teams", team.slug);
   fs.mkdirSync(directory, { recursive: true });

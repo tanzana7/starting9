@@ -28,6 +28,13 @@ export function isFightersRehearsalSeedWindow(now = new Date()) {
     && current < new Date(FIGHTERS_REHEARSAL.seedClosesAt);
 }
 
+export function isFightersRehearsalDriverWindow(now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  return !Number.isNaN(current.getTime())
+    && current >= new Date("2026-10-25T03:00:00.000Z")
+    && current <= new Date("2026-10-25T11:30:00.000Z");
+}
+
 export function simulatorRehearsalLifecycle(now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(current.getTime())) return { lineupAvailable: false, status: "scheduled", final: false };

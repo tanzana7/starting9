@@ -75,8 +75,9 @@ test("scenario worker uses real wall-clock-relative fixtures, not a global Date 
   const source = fs.readFileSync(path.join(ROOT, "tooling/test-site/worker.js"), "utf8");
   assert.match(source, /new Date\(\)/);
   assert.doesNotMatch(source, /Date\.now\s*=|globalThis\.Date\s*=|Date\s*=\s*class/);
-  const { TEST_CRON_TRIGGERS } = await import("../tooling/test-site/isolation.js");
-  assert.deepEqual(readJson("wrangler.test-auth.jsonc").triggers?.crons, TEST_CRON_TRIGGERS);
+  const { TEST_SCHEDULED_CRONS } = await import("../tooling/test-site/isolation.js");
+  assert.deepEqual(readJson("wrangler.test-auth.jsonc").triggers?.crons, []);
+  assert.deepEqual(TEST_SCHEDULED_CRONS, readJson("wrangler.auth.target.production.jsonc").triggers.crons);
   assert.equal(readJson("wrangler.test-auth.jsonc").vars.ENABLE_AUTO_LINEUP_FETCH, "false");
   assert.equal(readJson("wrangler.test-auth.jsonc").vars.ENABLE_SEMI_AUTO_LINEUP, "true");
 });

@@ -91,7 +91,6 @@ test("Test-only synthetic provisioning is admin-gated, production-denied, bounde
     f.close();
   }
 });
-
 test("ten provisioned users save predictions through the normal API and complete the Fighters rehearsal pipeline", async () => {
   const f = await createTestSiteMultiTeamFixture();
   try {

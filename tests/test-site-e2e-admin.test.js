@@ -10,6 +10,7 @@ import { TEST_TEAM_GROUPS, TEST_TEAMS, testPredictionPlayerId } from "../tooling
 import { transitionV3State } from "../backend/automation-v3/repository.js";
 import { buildSyntheticPredictions } from "../tooling/test-site/auto-prediction-seeder.js";
 import { V3_TIMING } from "../backend/automation-v3/constants.js";
+import { verifyFightersDriverAuthCheckToken, verifyFightersScheduledDriverToken } from "../tooling/test-site/github-oidc.js";
 
 let requestNumber = 0;
 const GITHUB_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks";
@@ -162,6 +163,65 @@ test("E2E admin provisioning uses ordinary registration/login and revokes its se
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
   const staleSession = await f.request("/api/auth/me", { cookie });
   assert.equal(staleSession.payload.authenticated, false);
+});
+
+test("Fighters scheduled OIDC is bound to the exact schedule workflow and auth-check cannot tick", async (t) => {
+  const f = await fixture();
+  t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
+  const workflowRef = "tanzana7/starting9/.github/workflows/fighters-unattended-driver.yml@refs/heads/main";
+  const scheduledToken = f.createOidcToken({
+    aud: "starting9-fighters-scheduled-driver",
+    event_name: "schedule",
+    workflow_ref: workflowRef
+  });
+  const authToken = f.createOidcToken({
+    aud: "starting9-fighters-scheduled-driver",
+    event_name: "workflow_dispatch",
+    workflow_ref: workflowRef
+  });
+  assert.equal((await verifyFightersScheduledDriverToken(scheduledToken.token)).runId, scheduledToken.runId);
+  assert.equal((await verifyFightersDriverAuthCheckToken(authToken.token)).runId, authToken.runId);
+  await assert.rejects(verifyFightersScheduledDriverToken(authToken.token));
+  await assert.rejects(verifyFightersDriverAuthCheckToken(scheduledToken.token));
+
+  const anonymous = await f.request("/api/test/admin/scheduled-tick/health", { method: "POST" });
+  assert.equal(anonymous.response.status, 404);
+  const regularCookie = await f.request("/api/test/admin/scheduled-tick/health", {
+    method: "POST", cookie: "s9_session=ordinary-user-session"
+  });
+  assert.equal(regularCookie.response.status, 404);
+  const wrongWorkflow = f.createOidcToken({ aud: "starting9-fighters-scheduled-driver", event_name: "schedule" });
+  const wrong = await f.request("/api/test/admin/scheduled-tick/health", {
+    method: "POST", authorization: wrongWorkflow.token
+  });
+  assert.equal(wrong.response.status, 404);
+
+  const health = await f.request("/api/test/admin/scheduled-tick/health", {
+    method: "POST", authorization: authToken.token
+  });
+  assert.equal(health.response.status, 200);
+  assert.equal(health.payload.environment, "test");
+  assert.equal(health.payload.service, "starting9-test-auth");
+
+  const authCheckCannotTick = await f.request("/api/test/admin/scheduled-tick", {
+    method: "POST", authorization: authToken.token, body: { now: "2026-10-25T06:00:00.000Z" }
+  });
+  assert.equal(authCheckCannotTick.response.status, 404);
+  const outsideWindow = await f.request("/api/test/admin/scheduled-tick", {
+    method: "POST", authorization: scheduledToken.token, body: { now: "2026-10-25T06:00:00.000Z" }
+  });
+  assert.equal(outsideWindow.response.status, 409,
+    "the endpoint must use the server wall clock instead of the caller-supplied test date");
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games").get().count, 0,
+    "a rejected out-of-window clock pulse must not invoke the scheduled core");
+
+  const productionResponse = await testSiteWorker.fetch(new Request(
+    "https://starting9-test-auth.internal/api/test/admin/scheduled-tick", {
+      method: "POST", headers: { Authorization: `Bearer ${scheduledToken.token}` }
+    }), { ...f.env, ENVIRONMENT: "production" }, { waitUntil() {} });
+  assert.equal(productionResponse.status, 404, "scheduled bridge is unavailable outside isolated Test identity");
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games").get().count, 0,
+    "authentication smoke must not create games or invoke the scheduled core");
 });
 
 test("E2E provisioning rejects invalid, expired, wrong-workflow, and mismatched run proofs without writes", async (t) => {

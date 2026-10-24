@@ -5,6 +5,8 @@ const EXPECTED_REPOSITORY_ID = "1293016764";
 const EXPECTED_WORKFLOW_REF = "tanzana7/starting9/.github/workflows/s9simu-remote-e2e.yml@refs/heads/main";
 const EXPECTED_SUBJECT = `repo:${EXPECTED_REPOSITORY}:ref:refs/heads/main`;
 const EXPECTED_AUDIENCE = "starting9-simu-e2e";
+const FIGHTERS_DRIVER_WORKFLOW_REF = "tanzana7/starting9/.github/workflows/fighters-unattended-driver.yml@refs/heads/main";
+const FIGHTERS_DRIVER_AUDIENCE = "starting9-fighters-scheduled-driver";
 const MAX_TOKEN_BYTES = 8_192;
 const MAX_TOKEN_AGE_SECONDS = 5 * 60;
 const MAX_TOKEN_LIFETIME_SECONDS = 10 * 60;
@@ -51,7 +53,28 @@ function validRunClaims(claims) {
     && claims.jti.length <= 256;
 }
 
-export async function verifyS9SimuRunToken(token, {
+function validWorkflowClaims(claims, { workflowRef, eventName, audience }) {
+  return claims.iss === GITHUB_ISSUER
+    && isAudienceAllowedFor(claims.aud, audience)
+    && claims.sub === EXPECTED_SUBJECT
+    && claims.repository === EXPECTED_REPOSITORY
+    && String(claims.repository_id || "") === EXPECTED_REPOSITORY_ID
+    && claims.ref === "refs/heads/main"
+    && claims.event_name === eventName
+    && claims.workflow_ref === workflowRef
+    && /^\d{1,20}$/.test(String(claims.run_id || ""))
+    && /^[1-9]\d{0,5}$/.test(String(claims.run_attempt || ""))
+    && typeof claims.jti === "string"
+    && claims.jti.length >= 8
+    && claims.jti.length <= 256;
+}
+
+function isAudienceAllowedFor(audience, expectedAudience) {
+  return audience === expectedAudience
+    || (Array.isArray(audience) && audience.length === 1 && audience[0] === expectedAudience);
+}
+
+async function verifyGitHubWorkflowToken(token, policy, {
   fetcher = fetch,
   nowSeconds = Math.floor(Date.now() / 1000)
 } = {}) {
@@ -68,8 +91,11 @@ export async function verifyS9SimuRunToken(token, {
   } catch {
     throw new Error("OIDC_TOKEN_INVALID");
   }
+  const claimsValid = policy.eventName === "workflow_dispatch" && policy.workflowRef === EXPECTED_WORKFLOW_REF
+    ? validRunClaims(claims)
+    : validWorkflowClaims(claims, policy);
   if (header.alg !== "RS256" || typeof header.kid !== "string" || header.kid.length > 256
-      || !validTimeClaims(claims, nowSeconds) || !validRunClaims(claims)) {
+      || !validTimeClaims(claims, nowSeconds) || !claimsValid) {
     throw new Error("OIDC_TOKEN_INVALID");
   }
 
@@ -109,13 +135,38 @@ export async function verifyS9SimuRunToken(token, {
   }
   if (!validSignature) throw new Error("OIDC_SIGNATURE_INVALID");
 
-  const runHash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(
-    `${claims.repository_id}:${claims.run_id}:${claims.run_attempt}:${claims.jti}`
-  ));
-  const suffix = Array.from(new Uint8Array(runHash).slice(0, 6), (byte) => byte.toString(16).padStart(2, "0")).join("");
   return Object.freeze({
     runId: `${claims.run_id}:${claims.run_attempt}`,
-    username: `e2e-${suffix}`,
+    jti: claims.jti,
     expiresAt: new Date(Number(claims.exp) * 1000).toISOString()
   });
+}
+
+export async function verifyS9SimuRunToken(token, options = {}) {
+  const identity = await verifyGitHubWorkflowToken(token, {
+    workflowRef: EXPECTED_WORKFLOW_REF,
+    eventName: "workflow_dispatch",
+    audience: EXPECTED_AUDIENCE
+  }, options);
+  const runHash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(
+    `${EXPECTED_REPOSITORY_ID}:${identity.runId}:${identity.jti}`
+  ));
+  const suffix = Array.from(new Uint8Array(runHash).slice(0, 6), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Object.freeze({ ...identity, username: `e2e-${suffix}` });
+}
+
+export function verifyFightersScheduledDriverToken(token, options = {}) {
+  return verifyGitHubWorkflowToken(token, {
+    workflowRef: FIGHTERS_DRIVER_WORKFLOW_REF,
+    eventName: "schedule",
+    audience: FIGHTERS_DRIVER_AUDIENCE
+  }, options);
+}
+
+export function verifyFightersDriverAuthCheckToken(token, options = {}) {
+  return verifyGitHubWorkflowToken(token, {
+    workflowRef: FIGHTERS_DRIVER_WORKFLOW_REF,
+    eventName: "workflow_dispatch",
+    audience: FIGHTERS_DRIVER_AUDIENCE
+  }, options);
 }

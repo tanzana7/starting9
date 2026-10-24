@@ -2,16 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { TEST_CRON_TRIGGERS } from "../tooling/test-site/isolation.js";
+import { TEST_SCHEDULED_CRONS } from "../tooling/test-site/isolation.js";
 const config = JSON.parse(fs.readFileSync(path.resolve("wrangler.test-auth.jsonc"), "utf8"));
 const productionConfig = JSON.parse(fs.readFileSync(path.resolve("wrangler.auth.production.jsonc"), "utf8"));
 const remoteE2EWorkflow = fs.readFileSync(path.resolve(".github/workflows/s9simu-remote-e2e.yml"), "utf8");
 const remoteE2ERunner = fs.readFileSync(path.resolve("tooling/test-site/simu-e2e.mjs"), "utf8");
 const testWorkerSource = fs.readFileSync(path.resolve("tooling/test-site/worker.js"), "utf8");
 const observerSource = fs.readFileSync(path.resolve("tooling/test-site/unattended-observer.mjs"), "utf8");
+const driverWorkflow = fs.readFileSync(path.resolve(".github/workflows/fighters-unattended-driver.yml"), "utf8");
+const driverSource = fs.readFileSync(path.resolve("tooling/test-site/unattended-driver.mjs"), "utf8");
 import { FIGHTERS_REHEARSAL, isArmedFightersTestEnvironment, isFightersRehearsalDay, isFightersRehearsalSeedWindow, shouldSeedFightersRehearsal,
   simulatorRehearsalLifecycle } from "../tooling/test-site/unattended-rehearsal.js";
 import { evaluateUnattendedCheckpoint } from "../tooling/test-site/unattended-observer.mjs";
+import { runScheduledCoreToCompletion, runScheduledTick } from "../tooling/test-site/scheduled-runner.js";
+import { evaluateDriverInvocation } from "../tooling/test-site/unattended-driver.mjs";
 
 const env = { ...config.vars, AUTH_DB: {}, AUDIT_DB: {} };
 const game = { game_date: FIGHTERS_REHEARSAL.date, provider_game_id: FIGHTERS_REHEARSAL.gameCode,
@@ -36,10 +40,64 @@ test("automatic seed requires exact isolated Test identity, fixture, open window
   assert.equal(isFightersRehearsalSeedWindow("2026-10-26T04:30:00Z"), false);
 });
 
-test("Test Cron cadence is bounded to the exact five Production-equivalent modes", () => {
-  assert.deepEqual(config.triggers.crons, TEST_CRON_TRIGGERS);
-  assert.deepEqual(config.triggers.crons, productionConfig.triggers.crons);
-  assert.equal(new Set(TEST_CRON_TRIGGERS).size, 5);
+test("Test Worker keeps all five production schedule modes but installs no Cloudflare Cron triggers", () => {
+  assert.deepEqual(config.triggers.crons, []);
+  assert.deepEqual(TEST_SCHEDULED_CRONS, productionConfig.triggers.crons);
+  assert.equal(new Set(TEST_SCHEDULED_CRONS).size, 5);
+});
+
+test("native scheduled and GitHub bridge use one bounded core with actual server time", async () => {
+  const now = new Date("2026-10-25T04:15:00.000Z");
+  const observations = [];
+  const callbacks = {
+    env,
+    ctx: { waitUntil() {} },
+    now,
+    runSeed: async (at) => observations.push({ type: "seed", at: at.toISOString() }),
+    runCore: async (event) => observations.push({ type: "core", event })
+  };
+  const native = await runScheduledTick({ source: "cloudflare", event: { cron: "* * * * *" }, ...callbacks });
+  const github = await runScheduledTick({ source: "github", event: { cron: "malicious", scheduledTime: 0 }, ...callbacks });
+  assert.equal(native.ok, true);
+  assert.equal(github.ok, true);
+  assert.deepEqual(observations.filter((item) => item.type === "core").map((item) => item.event), [
+    { cron: "* * * * *", scheduledTime: now.getTime() },
+    { cron: "* * * * *", scheduledTime: now.getTime() }
+  ]);
+  assert.equal(observations.filter((item) => item.type === "seed").length, 2);
+  assert.match(testWorkerSource, /runFightersScheduledTick\(\{ source: "github"/);
+  assert.match(testWorkerSource, /runFightersScheduledTick\(\{ source: "cloudflare"/);
+});
+
+test("GitHub HTTP pulse waits for the same scheduled handler's waitUntil work before responding", async () => {
+  let completed = false;
+  const result = await runScheduledCoreToCompletion(async (_event, _env, ctx) => {
+    ctx.waitUntil(new Promise((resolve) => setTimeout(() => {
+      completed = true;
+      resolve();
+    }, 5)));
+    return "scheduled-handler-returned";
+  }, { cron: "* * * * *", scheduledTime: Date.now() }, env);
+  assert.equal(result, "scheduled-handler-returned");
+  assert.equal(completed, true);
+});
+
+test("driver runs only on the 2026-10-25 JST window and manual dispatch is auth-check only", () => {
+  assert.deepEqual(evaluateDriverInvocation({ eventName: "schedule", now: "2026-10-25T03:00:00Z" }), { action: "tick" });
+  assert.deepEqual(evaluateDriverInvocation({ eventName: "schedule", now: "2026-10-25T11:30:00Z" }), { action: "tick" });
+  for (const now of ["2026-10-24T03:00:00Z", "2026-10-26T03:00:00Z", "2027-10-25T03:00:00Z"]) {
+    assert.equal(evaluateDriverInvocation({ eventName: "schedule", now }).action, "noop", now);
+  }
+  assert.equal(evaluateDriverInvocation({ eventName: "schedule", now: "2026-10-25T02:55:00Z" }).action, "noop");
+  assert.equal(evaluateDriverInvocation({ eventName: "schedule", now: "2026-10-25T11:35:00Z" }).action, "noop");
+  assert.deepEqual(evaluateDriverInvocation({ eventName: "workflow_dispatch", mode: "auth-check", now: "2026-10-24T00:00:00Z" }),
+    { action: "auth-check" });
+  assert.equal(evaluateDriverInvocation({ eventName: "workflow_dispatch", mode: "tick", now: "2026-10-25T04:00:00Z" }).action, "reject");
+  assert.match(driverWorkflow, /\*\/5 3-10 25 10 \*/);
+  assert.match(driverWorkflow, /0,5,10,15,20,25,30 11 25 10 \*/);
+  assert.match(driverWorkflow, /id-token: write/);
+  assert.match(driverSource, /GITHUB_EVENT_NAME/);
+  assert.doesNotMatch(driverSource, /logicalNow|nowOverride|scheduledTime\s*:/);
 });
 
 test("remote preparation mode is explicitly selectable and exits before any rehearsal pipeline advancement", () => {
@@ -55,7 +113,10 @@ test("automatic lineup settings are scoped to scheduled Test execution, not the 
   assert.equal(config.vars.ENABLE_AUTO_LINEUP_FETCH, "false");
   assert.equal(config.vars.ENABLE_SEMI_AUTO_LINEUP, "true");
   assert.match(testWorkerSource, /function createScheduledTestProductEnvironment[\s\S]*?ENABLE_AUTO_LINEUP_FETCH:\s*"true"[\s\S]*ENABLE_SEMI_AUTO_LINEUP:\s*"false"/);
-  assert.match(testWorkerSource, /authWorker\.scheduled\(event, productEnv, ctx\)/);
+  assert.match(testWorkerSource, /runCore:\s*\(scheduledEvent, scheduledEnv, scheduledContext\)\s*=>\s*\{[\s\S]*?return source === "github"[\s\S]*?runScheduledCoreToCompletion\(invoke, scheduledEvent, productEnv\)/);
+  assert.match(testWorkerSource, /const invoke = \(event, workerEnv, workerContext\) => authWorker\.scheduled\(event, workerEnv, workerContext\)/);
+  assert.match(testWorkerSource, /runFightersScheduledTick\(\{ source: "cloudflare", event, env, ctx, now: scheduledAt \}\)/);
+  assert.match(testWorkerSource, /runFightersScheduledTick\(\{ source: "github", event: null, env, ctx, now \}\)/);
 });
 
 test("simulated lineup and final-result availability use actual wall clock and fixed scenario date", () => {

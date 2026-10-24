@@ -6,15 +6,14 @@ import { V3_TIMING } from "../../backend/automation-v3/constants.js";
 import {
   isAuthorizedFightersRehearsalResetEnvironment,
   isIsolatedTestEnvironment,
-  TEST_CRON_TRIGGERS,
   validatePublishedScenario
 } from "./isolation.js";
-import { verifyS9SimuRunToken } from "./github-oidc.js";
+import { verifyFightersDriverAuthCheckToken, verifyFightersScheduledDriverToken, verifyS9SimuRunToken } from "./github-oidc.js";
 import { assertDistinctTestTeamIdentity, testTeamFixture, TEST_TEAMS, TEST_TEAM_KEYS, TEST_TEAM_GROUPS } from "./teams.js";
 import { simulatorGameDate } from "./simu-npb/source.js";
 import { buildSyntheticPredictions } from "./auto-prediction-seeder.js";
-import { FIGHTERS_REHEARSAL, isArmedFightersTestEnvironment, isFightersRehearsalSeedWindow,
-  shouldSeedFightersRehearsal } from "./unattended-rehearsal.js";
+import { FIGHTERS_REHEARSAL, shouldSeedFightersRehearsal } from "./unattended-rehearsal.js";
+import { runScheduledCoreToCompletion, runScheduledTick } from "./scheduled-runner.js";
 
 // Every request receives a separate fixture scope. No module-level mutable target can leak
 // from one team's asynchronous request into another team's game, roster, or pipeline.
@@ -237,6 +236,31 @@ async function runAutomaticFightersPredictionSeed(env, now) {
   }
   console.info(`[S9SIMU] unattended_seed trigger=${now.toISOString()} scenario=${FIGHTERS_REHEARSAL.scenario} outcome=seeded users=${usersResult.users.length} saved=${saved} total=${finalCount}`);
   return { outcome: "seeded", saved, total: finalCount };
+}
+
+async function runFightersScheduledTick({ source, event, env, ctx, now }) {
+  return runScheduledTick({
+    source,
+    event,
+    env,
+    ctx,
+    now,
+    runSeed: async (scheduledAt) => {
+      try {
+        await runAutomaticFightersPredictionSeed(env, scheduledAt);
+      } catch (error) {
+        const code = /^[A-Z0-9_]{1,64}$/.test(String(error?.code || "")) ? error.code : "REHEARSAL_SEED_FAILED";
+        console.error(`[S9SIMU] unattended_seed scenario=${FIGHTERS_REHEARSAL.scenario} outcome=failed code=${code}`);
+      }
+    },
+    runCore: (scheduledEvent, scheduledEnv, scheduledContext) => {
+      const productEnv = createScheduledTestProductEnvironment(scheduledEnv);
+      const invoke = (event, workerEnv, workerContext) => authWorker.scheduled(event, workerEnv, workerContext);
+      return source === "github"
+        ? runScheduledCoreToCompletion(invoke, scheduledEvent, productEnv)
+        : invoke(scheduledEvent, productEnv, scheduledContext);
+    }
+  });
 }
 
 async function deleteScenarioRows(db, internalGameId = INTERNAL_GAME_ID) {
@@ -1253,6 +1277,40 @@ async function handleTestControl(request, env, ctx) {
       "Cache-Control": "no-store"
     } });
   }
+  if (url.pathname === "/api/test/admin/scheduled-tick/health" && request.method === "POST") {
+    const match = String(request.headers.get("Authorization") || "").match(/^Bearer ([A-Za-z0-9._~-]+)$/);
+    if (!match) return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
+    try {
+      const identity = await verifyFightersDriverAuthCheckToken(match[1]);
+      return jsonResponse({ ok: true, service: "starting9-test-auth", environment: "test",
+        driver: "github-actions", runId: identity.runId }, 200, origin);
+    } catch (error) {
+      const unavailable = error?.message === "OIDC_KEYSET_UNAVAILABLE";
+      return jsonResponse({ ok: false, code: unavailable ? "DRIVER_AUTH_UNAVAILABLE" : "NOT_FOUND" }, unavailable ? 503 : 404, origin);
+    }
+  }
+  if (url.pathname === "/api/test/admin/scheduled-tick" && request.method === "POST") {
+    const match = String(request.headers.get("Authorization") || "").match(/^Bearer ([A-Za-z0-9._~-]+)$/);
+    if (!match) return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
+    try {
+      await verifyFightersScheduledDriverToken(match[1]);
+    } catch (error) {
+      const unavailable = error?.message === "OIDC_KEYSET_UNAVAILABLE";
+      return jsonResponse({ ok: false, code: unavailable ? "DRIVER_AUTH_UNAVAILABLE" : "NOT_FOUND" }, unavailable ? 503 : 404, origin);
+    }
+    const now = new Date();
+    try {
+      const result = await runFightersScheduledTick({ source: "github", event: null, env, ctx, now });
+      if (!result.ok) return jsonResponse({ ok: false, code: result.code }, result.status || 500, origin);
+      if (result.skipped) return jsonResponse({ ok: true, skipped: true, reason: result.reason }, 409, origin);
+      console.info(`[S9SIMU] github_scheduled_tick accepted=${now.toISOString()} scenario=${FIGHTERS_REHEARSAL.scenario}`);
+      return jsonResponse({ ok: true, accepted: true, scheduledTime: result.scheduledTime }, 202, origin);
+    } catch (error) {
+      const code = /^[A-Z0-9_]{1,64}$/.test(String(error?.code || "")) ? error.code : "SCHEDULED_TICK_FAILED";
+      console.error(`[S9SIMU] github_scheduled_tick failed code=${code}`);
+      return jsonResponse({ ok: false, code: "SCHEDULED_TICK_FAILED" }, 500, origin);
+    }
+  }
   if (url.pathname === "/api/test/e2e-admin" && request.method === "POST") {
     const input = await request.json().catch(() => null);
     if (input?.action === "provision") return provisionE2EAdmin(request, env, ctx, input);
@@ -1590,29 +1648,14 @@ export default {
     return createTestTeamWorker(key, { internalGameId }).fetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
-    if (!isArmedFightersTestEnvironment(env)) {
-      console.error("[S9SIMU] unattended_cron_denied reason=isolated_test_identity_required");
-      return;
-    }
-    const cron = String(event?.cron || "").trim();
-    if (!TEST_CRON_TRIGGERS.includes(cron)) {
-      console.error("[S9SIMU] unattended_cron_denied reason=unknown_test_cron");
-      return;
-    }
     const scheduledAt = new Date(Number(event?.scheduledTime) || Date.now());
-    const productEnv = createScheduledTestProductEnvironment(env);
-    // Seeding is an internal Test-only scheduled task, not an HTTP capability.
-    // Calling it before the shared formal handler ensures the normal prediction
-    // API sees the persisted open contest; the executor still owns all jobs.
-    if (cron === "* * * * *" && isFightersRehearsalSeedWindow(scheduledAt)) {
-      try {
-        await runAutomaticFightersPredictionSeed(env, scheduledAt);
-      } catch (error) {
-        const code = /^[A-Z0-9_]{1,64}$/.test(String(error?.code || "")) ? error.code : "REHEARSAL_SEED_FAILED";
-        console.error(`[S9SIMU] unattended_seed scenario=${FIGHTERS_REHEARSAL.scenario} outcome=failed code=${code}`);
-      }
+    try {
+      return await runFightersScheduledTick({ source: "cloudflare", event, env, ctx, now: scheduledAt });
+    } catch (error) {
+      const code = /^[A-Z0-9_]{1,64}$/.test(String(error?.code || "")) ? error.code : "SCHEDULED_TICK_FAILED";
+      console.error(`[S9SIMU] native_scheduled_tick failed code=${code}`);
+      throw error;
     }
-    return authWorker.scheduled(event, productEnv, ctx);
   }
 };
 

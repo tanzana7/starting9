@@ -30,15 +30,7 @@
     "S9SIMU_ENABLED": "true",
     "MIGRATION_MAINTENANCE": "false"
   },
-  "triggers": {
-    "crons": [
-      "* * * * *",
-      "*/5 * * * *",
-      "1,16,31,46 * * * *",
-      "2,7,12,17,22,27,32,37,42,47,52,57 * * * *",
-      "0,15,30,45 * * * *"
-    ]
-  },
+  "triggers": { "crons": [] },
   "d1_databases": [
     {
       "binding": "AUTH_DB",

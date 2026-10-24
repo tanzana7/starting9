@@ -1,0 +1,38 @@
+name: Fighters Unattended Scheduled Driver
+
+on:
+  schedule:
+    - cron: "*/5 3-10 25 10 *"
+    - cron: "0,5,10,15,20,25,30 11 25 10 *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Non-mutating driver authentication check only
+        required: true
+        type: choice
+        options:
+          - auth-check
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: fighters-unattended-scheduled-driver
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    if: github.repository == 'tanzana7/starting9' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Send one authenticated Test scheduled tick
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          S9SIMU_DRIVER_MODE: ${{ inputs.mode }}
+        run: node tooling/test-site/unattended-driver.mjs

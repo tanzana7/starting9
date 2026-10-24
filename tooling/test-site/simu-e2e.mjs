@@ -5,6 +5,7 @@ import { buildSyntheticPredictions } from "./auto-prediction-seeder.js";
 import { assertTestAuthConfig, TEST_AUTH_DB_ID, TEST_AUDIT_DB_ID } from "./isolation.js";
 import { classifyE2ECleanupResult } from "./cleanup-contract.js";
 import { readScenarioState } from "./scenario-state.js";
+import { FIGHTERS_REHEARSAL } from "./rehearsal-clock.js";
 import { V3_TIMING } from "../../backend/automation-v3/constants.js";
 import fs from "node:fs";
 

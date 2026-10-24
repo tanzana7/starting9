@@ -11,7 +11,7 @@ import fs from "node:fs";
 const SITE_ORIGIN = "https://s9simu.pages.dev";
 const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
 const RUN_MODE = String(process.env.S9SIMU_MODE || "full").trim().toLowerCase();
-assert.ok(["full", "schedule-check", "roster-only", "job-only", "sibling-check", "fighters-rehearsal", "admin-diagnose", "admin-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, roster-only, job-only, sibling-check, fighters-rehearsal, admin-diagnose, or admin-check");
+assert.ok(["full", "schedule-check", "roster-only", "job-only", "sibling-check", "fighters-rehearsal", "prepare-unattended", "admin-diagnose", "admin-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, roster-only, job-only, sibling-check, fighters-rehearsal, prepare-unattended, admin-diagnose, or admin-check");
 
 const config = JSON.parse(fs.readFileSync(new URL("../../wrangler.test-auth.jsonc", import.meta.url), "utf8"));
 assertTestAuthConfig(config);
@@ -550,7 +550,7 @@ async function runRosterOnlyCheck() {
   console.log(`S9SIMU_ROSTER_ONLY_COMPLETE: ${JSON.stringify({ providerGameId, internalGameId: game.internal_game_id, teams: [group.homeKey, group.awayKey], cleanup: "completed" })}`);
 }
 
-async function runFightersOperationalRehearsal() {
+async function runFightersOperationalRehearsal({ prepareOnly = false } = {}) {
   const physicalGames = await fetchSimulatorSchedule({ requireFreshSync: true });
   const game = physicalGames.find((item) => item.game_code === "g-t-4");
   assert.ok(game, "Fighters rehearsal requires the Hawks/Fighters physical game");
@@ -646,6 +646,37 @@ async function runFightersOperationalRehearsal() {
   assert.ok(roster.every((player) => player.teamCode === "fighters"
     && player.teamId === TEST_TEAMS.fighters.playerTeamId), "roster identity must remain Fighters-scoped");
   assert.equal(new Set(roster.map((player) => player.playerId)).size, 15);
+
+  if (prepareOnly) {
+    const [baselineJobs, baselineStatus, baselinePrediction, finalFightersSnapshot, finalHawksSnapshot] = await Promise.all([
+      call(`/api/test/jobs${fightersQuery}`, { admin: true }),
+      call(`/api/test/status${fightersQuery}`),
+      call(`/api/predictions/current${fightersQuery}`, { admin: true }),
+      call(`/api/test/rehearsal/snapshot${fightersQuery}`, { admin: true }),
+      call(`/api/test/rehearsal/snapshot${hawksQuery}`, { admin: true })
+    ]);
+    const baseline = finalFightersSnapshot.payload.snapshot;
+    assert.equal(readScenarioState(baselineStatus.payload.game).effectiveState, "scheduled");
+    assert.equal(baselineStatus.payload.game.publication_status, "pending");
+    assert.equal(baselinePrediction.payload?.prediction, undefined);
+    assert.equal(baseline.predictionCount, 0);
+    assert.equal(baseline.lineupCount, 0);
+    assert.equal(baseline.scoringCount, 0);
+    assert.equal(baseline.rankingCount, 0);
+    assert.equal(baseline.publicationCount, 0);
+    assert.equal(baseline.formalJobCount, 0);
+    assert.equal(baselineJobs.payload.jobs.length, 0);
+    assert.deepEqual(finalHawksSnapshot.payload.snapshot, preservedHawksSnapshot,
+      "Fighters preparation must leave the published Hawks contest fingerprint unchanged");
+    console.log(`FIGHTERS_UNATTENDED_BASELINE_ARMED: ${JSON.stringify({
+      scenario: "fighters-2026-10-25-1500", date: FIGHTERS_REHEARSAL.date,
+      startAt: game.start_at, providerGameId: game.game_code, internalGameId: game.internal_game_id,
+      contestId: fightersContestId, fightersState: "scheduled", predictions: 0,
+      formalJobs: 0, rosterCount: roster.length, hawksState: "published",
+      hawksFingerprint: preservedHawksSnapshot.fingerprint, resetPerformed
+    })}`);
+    return;
+  }
 
   const contestId = fightersContestId;
   const seed = 20261025;
@@ -787,6 +818,8 @@ try {
     await runRosterOnlyCheck();
   } else if (RUN_MODE === "sibling-check") {
     await runSiblingCheck();
+  } else if (RUN_MODE === "prepare-unattended") {
+    await runFightersOperationalRehearsal({ prepareOnly: true });
   } else if (RUN_MODE === "fighters-rehearsal") {
     await runFightersOperationalRehearsal();
   } else {
@@ -878,6 +911,10 @@ if (RUN_MODE === "full") {
   assert.equal(publishedContests, 1);
   assert.equal(temporaryUserRetained, false);
   console.log("Completed the Fighters-only 2026-10-25 15:00 rehearsal; prediction data is retained and all temporary sessions/admin access were revoked.");
+} else if (RUN_MODE === "prepare-unattended") {
+  assert.equal(publishedContests, 0);
+  assert.equal(temporaryUserRetained, false);
+  console.log("Completed the bounded Fighters-only unattended baseline preparation; no pipeline stage was advanced and temporary admin access was revoked.");
 } else {
   assert.equal(publishedContests, 0);
   assert.equal(temporaryUserRetained, false);

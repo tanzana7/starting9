@@ -6,6 +6,13 @@ export const TEST_AUTH_DB_NAME = "starting9-test-auth-db";
 export const TEST_AUDIT_DB_NAME = "starting9-test-audit-db";
 export const TEST_AUTH_DB_ID = "7ea1fa14-ffc0-4404-8a65-5dbb8218f368";
 export const TEST_AUDIT_DB_ID = "a18c6cf9-a238-4059-a5ef-784f248e225e";
+export const TEST_CRON_TRIGGERS = Object.freeze([
+  "* * * * *",
+  "*/5 * * * *",
+  "1,16,31,46 * * * *",
+  "2,7,12,17,22,27,32,37,42,47,52,57 * * * *",
+  "0,15,30,45 * * * *"
+]);
 
 export const PRODUCTION_RESOURCE_IDS = Object.freeze({
   authDatabase: "326f97c3-768d-4df6-ada2-129fdb1865a1",
@@ -39,7 +46,9 @@ export function assertTestAuthConfig(config) {
   if (config.name !== TEST_AUTH_WORKER) throw new Error("test Worker name must be isolated");
   if (config.account_id !== TEST_CLOUDFLARE_ACCOUNT_ID) throw new Error("test Worker account must be TARGET");
   if (config.main !== "tooling/test-site/worker.js") throw new Error("test Worker must use the test-only entrypoint");
-  if ((config.triggers?.crons || []).length !== 0) throw new Error("test Worker must have no Cron triggers");
+  if (JSON.stringify(config.triggers?.crons || []) !== JSON.stringify(TEST_CRON_TRIGGERS)) {
+    throw new Error("test Worker Cron triggers must exactly match the isolated rehearsal cadence");
+  }
   if ((config.services || []).length !== 0) throw new Error("test Worker must not have service bindings");
   if (config.vars?.ENVIRONMENT !== "test" || config.vars?.TEST_SITE_ID !== TEST_SITE_ID) {
     throw new Error("test Worker environment identity is required");

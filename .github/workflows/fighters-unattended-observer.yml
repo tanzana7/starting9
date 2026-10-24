@@ -1,0 +1,34 @@
+name: Fighters Unattended Automation Observer
+
+on:
+  schedule:
+    - cron: "30 4 25 10 *"
+    - cron: "5 5 25 10 *"
+    - cron: "30 6 25 10 *"
+    - cron: "0 11 25 10 *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fighters-unattended-2026-10-25
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    if: github.repository == 'tanzana7/starting9' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Read-only checkpoint
+        env:
+          GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: node tooling/test-site/unattended-observer.mjs

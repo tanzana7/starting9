@@ -6,11 +6,15 @@ import { V3_TIMING } from "../../backend/automation-v3/constants.js";
 import {
   isAuthorizedFightersRehearsalResetEnvironment,
   isIsolatedTestEnvironment,
+  TEST_CRON_TRIGGERS,
   validatePublishedScenario
 } from "./isolation.js";
 import { verifyS9SimuRunToken } from "./github-oidc.js";
 import { assertDistinctTestTeamIdentity, testTeamFixture, TEST_TEAMS, TEST_TEAM_KEYS, TEST_TEAM_GROUPS } from "./teams.js";
 import { simulatorGameDate } from "./simu-npb/source.js";
+import { buildSyntheticPredictions } from "./auto-prediction-seeder.js";
+import { FIGHTERS_REHEARSAL, isArmedFightersTestEnvironment, isFightersRehearsalSeedWindow,
+  shouldSeedFightersRehearsal } from "./unattended-rehearsal.js";
 
 // Every request receives a separate fixture scope. No module-level mutable target can leak
 // from one team's asynchronous request into another team's game, roster, or pipeline.
@@ -143,6 +147,96 @@ function createProductEnvironment(env, { automaticOfficialLineup = false, predic
     // That E2E explicitly selects the automatic official-lineup path it tests.
     ...(automaticOfficialLineup ? { ENABLE_SEMI_AUTO_LINEUP: "false" } : {})
   };
+}
+
+function createScheduledTestProductEnvironment(env) {
+  const { team } = testTeamFixture(FIGHTERS_REHEARSAL.targetTeam);
+  return {
+    ...env,
+    TARGET_TEAM_CONTEXT: team,
+    S9SIMU_ENABLED: String(env.S9SIMU_ENABLED || "false"),
+    NPB_SOURCE: "simulator",
+    S9SIMU_BASE_URL: String(env.S9SIMU_BASE_URL || "https://s9simu.pages.dev"),
+    NPB_FETCH_DISABLED: "false",
+    ENABLE_AUTO_ROSTER_FETCH: "true",
+    ENABLE_AUTO_LINEUP_FETCH: "true",
+    ENABLE_SEMI_AUTO_LINEUP: "false"
+  };
+}
+
+async function runAutomaticFightersPredictionSeed(env, now) {
+  const target = await env.AUTH_DB.prepare(`SELECT games.internal_game_id, games.game_date, games.start_time,
+      COALESCE((SELECT identifier_value FROM game_identifiers
+        WHERE internal_game_id = games.internal_game_id AND provider = 'npb'
+          AND identifier_type = 'npb_game_code'
+        ORDER BY updated_at DESC, id DESC LIMIT 1), games.npb_game_code) AS provider_game_id,
+      game_contests.contest_id, game_contests.target_team_key,
+      COALESCE(contest_automation_v3_state.state, 'scheduled') AS state
+    FROM games JOIN game_contests ON game_contests.internal_game_id = games.internal_game_id
+    LEFT JOIN contest_automation_v3_state ON contest_automation_v3_state.internal_game_id = games.internal_game_id
+      AND contest_automation_v3_state.contest_id = game_contests.contest_id
+    WHERE games.game_date = ?1 AND game_contests.target_team_key = ?2
+      AND COALESCE((SELECT identifier_value FROM game_identifiers
+        WHERE internal_game_id = games.internal_game_id AND provider = 'npb'
+          AND identifier_type = 'npb_game_code'
+        ORDER BY updated_at DESC, id DESC LIMIT 1), games.npb_game_code) = ?3
+    LIMIT 1`).bind(FIGHTERS_REHEARSAL.date, FIGHTERS_REHEARSAL.targetTeam, FIGHTERS_REHEARSAL.gameCode).first();
+  if (!target) {
+    console.info(`[S9SIMU] unattended_seed trigger=${now.toISOString()} scenario=${FIGHTERS_REHEARSAL.scenario} outcome=skipped reason=target_not_discovered`);
+    return { outcome: "skipped", reason: "target_not_discovered" };
+  }
+  const countRow = await env.AUTH_DB.prepare(`SELECT COUNT(*) AS count FROM predictions
+    WHERE internal_game_id = ?1 AND contest_id = ?2`).bind(target.internal_game_id, target.contest_id).first();
+  const predictionCount = Number(countRow?.count || 0);
+  const decision = shouldSeedFightersRehearsal({ env, now, game: target, predictionCount });
+  if (!decision.allowed) {
+    console.info(`[S9SIMU] unattended_seed trigger=${now.toISOString()} scenario=${FIGHTERS_REHEARSAL.scenario} outcome=skipped reason=${decision.reason} predictions=${predictionCount}`);
+    return { outcome: "skipped", reason: decision.reason, predictionCount };
+  }
+
+  const productEnv = createScheduledTestProductEnvironment(env);
+  const rosterResponse = await authWorker.fetch(new Request(
+    `https://starting9-test-auth.internal/api/game-day-roster?internalGameId=${encodeURIComponent(target.internal_game_id)}`
+  ), productEnv, { waitUntil() {} });
+  const rosterPayload = await rosterResponse.json().catch(() => null);
+  if (!rosterResponse.ok || !Array.isArray(rosterPayload?.players) || rosterPayload.players.length < 15) {
+    throw Object.assign(new Error("unattended rehearsal roster is not ready"), { code: "REHEARSAL_ROSTER_NOT_READY" });
+  }
+  const usersResult = await provisionSyntheticTestUsers(env, {
+    rehearsalId: FIGHTERS_REHEARSAL.scenario,
+    seed: FIGHTERS_REHEARSAL.seed,
+    count: FIGHTERS_REHEARSAL.userCount
+  });
+  if (!usersResult.ok) throw Object.assign(new Error("synthetic identity conflict"), { code: usersResult.code });
+  const predictions = buildSyntheticPredictions({ contestId: target.contest_id, targetTeam: "fighters",
+    roster: rosterPayload.players, userCount: FIGHTERS_REHEARSAL.userCount, seed: FIGHTERS_REHEARSAL.seed });
+  const existingUsers = await env.AUTH_DB.prepare(`SELECT user_id FROM predictions
+    WHERE internal_game_id = ?1 AND contest_id = ?2`).bind(target.internal_game_id, target.contest_id).all();
+  const existingUserIds = new Set((existingUsers.results || []).map((row) => String(row.user_id)));
+  let saved = 0;
+  for (const [index, user] of usersResult.users.entries()) {
+    if (existingUserIds.has(user.userId)) continue;
+    const response = await authWorker.fetch(new Request(
+      `https://starting9-test-auth.internal/api/predictions/current?internalGameId=${encodeURIComponent(target.internal_game_id)}&contestId=${encodeURIComponent(target.contest_id)}`,
+      { method: "PUT", headers: { Cookie: user.sessionCookie, "Content-Type": "application/json", Origin: "https://s9simu.pages.dev" },
+        body: JSON.stringify({ internalGameId: target.internal_game_id, contestId: target.contest_id, prediction: predictions[index].prediction }) }
+    ), productEnv, { waitUntil() {} });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.ok !== true) {
+      throw Object.assign(new Error("normal prediction API rejected an automatic Test prediction"), {
+        code: typeof payload?.code === "string" ? payload.code : "REHEARSAL_PREDICTION_SAVE_FAILED"
+      });
+    }
+    saved += 1;
+  }
+  const after = await env.AUTH_DB.prepare(`SELECT COUNT(*) AS count FROM predictions
+    WHERE internal_game_id = ?1 AND contest_id = ?2`).bind(target.internal_game_id, target.contest_id).first();
+  const finalCount = Number(after?.count || 0);
+  if (finalCount !== FIGHTERS_REHEARSAL.userCount) {
+    throw Object.assign(new Error("automatic Test prediction count did not reach the expected total"), { code: "REHEARSAL_PREDICTION_COUNT_MISMATCH" });
+  }
+  console.info(`[S9SIMU] unattended_seed trigger=${now.toISOString()} scenario=${FIGHTERS_REHEARSAL.scenario} outcome=seeded users=${usersResult.users.length} saved=${saved} total=${finalCount}`);
+  return { outcome: "seeded", saved, total: finalCount };
 }
 
 async function deleteScenarioRows(db, internalGameId = INTERNAL_GAME_ID) {
@@ -1250,6 +1344,80 @@ async function handleTestControl(request, env, ctx) {
   if (url.pathname === "/api/test/status" && request.method === "GET") {
     return jsonResponse({ ok: true, game: await currentScenarioGame(env.AUTH_DB) }, 200, origin);
   }
+  if (url.pathname === "/api/test/rehearsal/observer" && request.method === "GET") {
+    if (targetTeam.key !== FIGHTERS_REHEARSAL.targetTeam
+        || !isAuthorizedFightersRehearsalResetEnvironment(env)) {
+      return jsonResponse({ ok: false, code: "REHEARSAL_TEST_ACCOUNT_REQUIRED" }, 404, origin);
+    }
+    const rows = await env.AUTH_DB.prepare(`SELECT games.internal_game_id, games.game_date, games.start_time,
+        COALESCE((SELECT identifier_value FROM game_identifiers
+          WHERE internal_game_id = games.internal_game_id AND provider = 'npb'
+            AND identifier_type = 'npb_game_code' ORDER BY updated_at DESC, id DESC LIMIT 1), games.npb_game_code) AS provider_game_id,
+        target.contest_id AS fighters_contest_id, sibling.contest_id AS hawks_contest_id
+      FROM games
+      JOIN game_contests AS target ON target.internal_game_id = games.internal_game_id AND target.target_team_key = 'fighters'
+      JOIN game_contests AS sibling ON sibling.internal_game_id = games.internal_game_id AND sibling.target_team_key = 'hawks'
+      WHERE games.game_date = ?1 AND COALESCE((SELECT identifier_value FROM game_identifiers
+        WHERE internal_game_id = games.internal_game_id AND provider = 'npb'
+          AND identifier_type = 'npb_game_code' ORDER BY updated_at DESC, id DESC LIMIT 1), games.npb_game_code) = ?2
+      LIMIT 1`).bind(FIGHTERS_REHEARSAL.date, FIGHTERS_REHEARSAL.gameCode).first();
+    if (!rows) return jsonResponse({ ok: false, code: "REHEARSAL_TARGET_NOT_FOUND" }, 404, origin);
+    const [fighters, hawks, jobs, predictionUsers, scored, lineupRow, rankingRevision, rosterSnapshot] = await Promise.all([
+      readRehearsalContestSnapshot(env.AUTH_DB, { internalGameId: rows.internal_game_id, contestId: rows.fighters_contest_id }),
+      readRehearsalContestSnapshot(env.AUTH_DB, { internalGameId: rows.internal_game_id, contestId: rows.hawks_contest_id }),
+      env.AUTH_DB.prepare(`SELECT status, job_type, COUNT(*) AS count FROM game_jobs_v3
+        WHERE internal_game_id = ?1 AND contest_id = ?2 GROUP BY status, job_type`)
+        .bind(rows.internal_game_id, rows.fighters_contest_id).all(),
+      env.AUTH_DB.prepare(`SELECT COUNT(DISTINCT user_id) AS count FROM predictions
+        WHERE internal_game_id = ?1 AND contest_id = ?2`)
+        .bind(rows.internal_game_id, rows.fighters_contest_id).first(),
+      env.AUTH_DB.prepare(`SELECT COUNT(*) AS count FROM predictions
+        WHERE internal_game_id = ?1 AND contest_id = ?2 AND status = 'scored'`)
+        .bind(rows.internal_game_id, rows.fighters_contest_id).first(),
+      env.AUTH_DB.prepare(`SELECT actual_lineup_json, final_lineup_revision_id FROM game_lineups
+        WHERE internal_game_id = ?1 AND contest_id = ?2 LIMIT 1`)
+        .bind(rows.internal_game_id, rows.fighters_contest_id).first(),
+      env.AUTH_DB.prepare(`SELECT status FROM contest_ranking_reflection_revisions
+        WHERE internal_game_id = ?1 AND contest_id = ?2 ORDER BY ranking_update_revision DESC LIMIT 1`)
+        .bind(rows.internal_game_id, rows.fighters_contest_id).first(),
+      env.AUTH_DB.prepare(`SELECT roster_json FROM game_roster_snapshots
+        WHERE internal_game_id = ?1 ORDER BY updated_at DESC, captured_at DESC LIMIT 1`)
+        .bind(rows.internal_game_id).first()
+    ]);
+    let rosterCount = 0;
+    try {
+      const roster = JSON.parse(String(rosterSnapshot?.roster_json || "[]"));
+      rosterCount = Array.isArray(roster) ? roster.length : 0;
+    } catch { /* malformed snapshots remain visible as missing, never a false pass */ }
+    let officialLineupRows = 0;
+    try {
+      const parsed = JSON.parse(String(lineupRow?.actual_lineup_json || "null"));
+      officialLineupRows = Array.isArray(parsed) ? parsed.length : Array.isArray(parsed?.lineup) ? parsed.lineup.length : 0;
+    } catch { /* malformed artifacts are observed as absent, never normalized into a pass */ }
+    const jobCounts = (jobs.results || []).reduce((summary, row) => {
+      const status = String(row.status || "unknown");
+      const type = String(row.job_type || "unknown");
+      summary.statuses[status] = (summary.statuses[status] || 0) + Number(row.count || 0);
+      summary.types[type] = summary.types[type] || {};
+      summary.types[type][status] = Number(row.count || 0);
+      return summary;
+    }, { statuses: {}, types: {} });
+    return jsonResponse({ ok: true, scenario: FIGHTERS_REHEARSAL.scenario,
+      game: { providerGameId: rows.provider_game_id, date: rows.game_date, startAt: rows.start_time },
+      fighters: { state: fighters.state, predictions: fighters.predictionCount,
+        distinctPredictionUsers: Number(predictionUsers?.count || 0), officialLineupRows,
+        lineupArtifactCount: fighters.lineupCount,
+        finalLineupRevisionPresent: Boolean(lineupRow?.final_lineup_revision_id),
+        scoredPredictions: Number(scored?.count || 0),
+        rankingReflected: rankingRevision?.status === "reflected",
+        scoringArtifacts: fighters.scoringCount, rankingArtifacts: fighters.rankingCount,
+        publicationArtifacts: fighters.publicationCount, publicationStatus: fighters.publicationStatus,
+        jobs: jobCounts.statuses, jobTypes: jobCounts.types },
+      rosterCount,
+      hawks: { state: hawks.state, publicationStatus: hawks.publicationStatus,
+        publicationCount: hawks.publicationCount, fingerprint: hawks.fingerprint }
+    }, 200, origin);
+  }
   if (url.pathname === "/api/test/rehearsal/snapshot" && request.method === "GET") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
     const game = await env.AUTH_DB.prepare(`SELECT COALESCE((SELECT identifier_value FROM game_identifiers
@@ -1420,6 +1588,31 @@ export default {
       internalGameId = String(game?.internal_game_id || requestedGameId);
     }
     return createTestTeamWorker(key, { internalGameId }).fetch(request, env, ctx);
+  },
+  async scheduled(event, env, ctx) {
+    if (!isArmedFightersTestEnvironment(env)) {
+      console.error("[S9SIMU] unattended_cron_denied reason=isolated_test_identity_required");
+      return;
+    }
+    const cron = String(event?.cron || "").trim();
+    if (!TEST_CRON_TRIGGERS.includes(cron)) {
+      console.error("[S9SIMU] unattended_cron_denied reason=unknown_test_cron");
+      return;
+    }
+    const scheduledAt = new Date(Number(event?.scheduledTime) || Date.now());
+    const productEnv = createScheduledTestProductEnvironment(env);
+    // Seeding is an internal Test-only scheduled task, not an HTTP capability.
+    // Calling it before the shared formal handler ensures the normal prediction
+    // API sees the persisted open contest; the executor still owns all jobs.
+    if (cron === "* * * * *" && isFightersRehearsalSeedWindow(scheduledAt)) {
+      try {
+        await runAutomaticFightersPredictionSeed(env, scheduledAt);
+      } catch (error) {
+        const code = /^[A-Z0-9_]{1,64}$/.test(String(error?.code || "")) ? error.code : "REHEARSAL_SEED_FAILED";
+        console.error(`[S9SIMU] unattended_seed scenario=${FIGHTERS_REHEARSAL.scenario} outcome=failed code=${code}`);
+      }
+    }
+    return authWorker.scheduled(event, productEnv, ctx);
   }
 };
 

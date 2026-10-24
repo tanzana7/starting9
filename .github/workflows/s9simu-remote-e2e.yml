@@ -15,6 +15,7 @@ on:
           - job-only
           - sibling-check
           - fighters-rehearsal
+          - prepare-unattended
           - full
         default: full
 

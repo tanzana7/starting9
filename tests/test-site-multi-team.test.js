@@ -138,7 +138,7 @@ test("all twelve isolated teams complete contest E2E across six dual-contest phy
   } finally { f.close(); }
 });
 
-test("Fighters rehearsal reset preserves a published same-game Hawks contest and refuses a published target", async () => {
+test("Fighters rehearsal reset clears a published target while preserving the published same-game Hawks contest", async () => {
   const f = await createTestSiteMultiTeamFixture();
   const group = TEST_TEAM_GROUPS[3];
   const internalGameId = group.internalGameId;
@@ -194,25 +194,46 @@ test("Fighters rehearsal reset preserves a published same-game Hawks contest and
     const hawksAfterReset = await f.request("hawks", `/api/test/rehearsal/snapshot${query("hawks")}`);
     assert.deepEqual(hawksAfterReset.snapshot, hawksBefore.snapshot);
 
-    // Fixture a published target to prove the endpoint is fail-closed without
-    // relying on a second full pipeline after the shared game clock advanced.
-    f.database.prepare(`UPDATE contest_automation_v3_state SET state='published', published_at=?, updated_at=?
-      WHERE contest_id=?`).run(now, now, fightersJobs.contestId);
-    f.database.prepare(`INSERT INTO contest_ranking_games
-      (contest_id, internal_game_id, game_id, game_status, created_at, updated_at,
-       publication_status, published_at)
-      VALUES (?, ?, ?, 'scored', ?, ?, 'published', ?)`)
-      .run(fightersJobs.contestId, internalGameId, internalGameId, now, now, now);
+    await prepareTeamPrediction(f, "fighters", group);
+    await exerciseTeam(f, "fighters", group);
+    // Scenario helpers advance the shared local fixture clock; restore only
+    // this in-memory test schedule so the reset endpoint rechecks the exact
+    // rehearsal identity, not a production/game-wide schedule mutation.
+    f.database.prepare(`UPDATE games SET game_date='2026-10-25', start_time='2026-10-25T15:00:00+09:00'
+      WHERE internal_game_id=?`).run(internalGameId);
     const publishedFightersBefore = await f.request("fighters", `/api/test/rehearsal/snapshot${query("fighters")}`);
-    const refused = await f.request("fighters", `/api/test/rehearsal/reset-fighters${query("fighters")}`, {
+    assert.equal(publishedFightersBefore.snapshot.state, "published");
+    assert.equal(publishedFightersBefore.snapshot.publicationStatus, "published");
+    const resetPublished = await f.request("fighters", `/api/test/rehearsal/reset-fighters${query("fighters")}`, {
       expectedContestId: fightersJobs.contestId,
       expectedSiblingContestId: hawksJobs.contestId
-    }, "POST", { expectedStatus: 409 });
-    assert.equal(refused.code, "REHEARSAL_TARGET_ALREADY_PUBLISHED");
+    });
+    assert.equal(resetPublished.targetAfter.state, "scheduled");
+    assert.equal(resetPublished.targetAfter.predictionCount, 0);
+    assert.equal(resetPublished.targetAfter.lineupCount, 0);
+    assert.equal(resetPublished.targetAfter.scoringCount, 0);
+    assert.equal(resetPublished.targetAfter.rankingCount, 0);
+    assert.equal(resetPublished.targetAfter.publicationCount, 0);
+    assert.equal(resetPublished.targetAfter.formalJobCount, 0);
     const publishedFightersAfter = await f.request("fighters", `/api/test/rehearsal/snapshot${query("fighters")}`);
-    assert.deepEqual(publishedFightersAfter.snapshot, publishedFightersBefore.snapshot);
+    assert.notDeepEqual(publishedFightersAfter.snapshot, publishedFightersBefore.snapshot);
+    assert.equal(publishedFightersAfter.snapshot.state, "scheduled");
+    assert.equal(publishedFightersAfter.snapshot.publicationCount, 0);
     const finalHawks = await f.request("hawks", `/api/test/rehearsal/snapshot${query("hawks")}`);
     assert.deepEqual(finalHawks.snapshot, hawksBefore.snapshot);
+
+    const productionAttempt = await f.request("fighters", `/api/test/rehearsal/reset-fighters${query("fighters")}`, {
+      expectedContestId: fightersJobs.contestId,
+      expectedSiblingContestId: hawksJobs.contestId
+    }, "POST", { expectedStatus: 404, envOverrides: { ENVIRONMENT: "production" } });
+    assert.equal(productionAttempt.code, "TEST_ENVIRONMENT_REQUIRED");
+    const wrongAccountAttempt = await f.request("fighters", `/api/test/rehearsal/reset-fighters${query("fighters")}`, {
+      expectedContestId: fightersJobs.contestId,
+      expectedSiblingContestId: hawksJobs.contestId
+    }, "POST", { expectedStatus: 404, envOverrides: { TEST_EXPECTED_ACCOUNT_ID: "wrong-account" } });
+    assert.equal(wrongAccountAttempt.code, "REHEARSAL_TEST_ACCOUNT_REQUIRED");
+    const finalTarget = await f.request("fighters", `/api/test/rehearsal/snapshot${query("fighters")}`);
+    assert.deepEqual(finalTarget.snapshot, publishedFightersAfter.snapshot);
   } finally { f.close(); }
 });
 

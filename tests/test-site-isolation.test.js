@@ -39,11 +39,16 @@ test("test controller fails closed when any resource identity is missing or prod
     AUTH_DB: {}, AUDIT_DB: {}
   };
   assert.equal(isolation.isIsolatedTestEnvironment(valid), true);
+  assert.equal(isolation.isAuthorizedFightersRehearsalResetEnvironment(valid), true);
+  assert.equal(isolation.isAuthorizedFightersRehearsalResetEnvironment({ ...valid, TEST_EXPECTED_ACCOUNT_ID: "wrong-account" }), false);
   assert.equal(isolation.isIsolatedTestEnvironment({ ...valid, TEST_AUTH_DB_ID: "" }), false);
   assert.equal(isolation.isIsolatedTestEnvironment({ ...valid, TEST_AUTH_DB_ID: "synthetic-but-unknown-db" }), false);
   assert.equal(isolation.isIsolatedTestEnvironment({ ...valid, TEST_WORKER_NAME: "starting9-auth" }), false);
   assert.equal(isolation.isIsolatedTestEnvironment({ ...valid, TEST_AUDIT_DB_ID: isolation.PRODUCTION_RESOURCE_IDS.auditDatabase }), false);
   assert.equal(isolation.isIsolatedTestEnvironment({ ...valid, TEST_AUDIT_DB_ID: "synthetic-but-unknown-db" }), false);
+  const wrongAccountConfig = readJson("wrangler.test-auth.jsonc");
+  wrongAccountConfig.vars.TEST_EXPECTED_ACCOUNT_ID = "wrong-account";
+  assert.throws(() => isolation.assertTestAuthConfig(wrongAccountConfig), /runtime account identity/);
 });
 
 test("published scenario validation requires every canonical artifact", async () => {

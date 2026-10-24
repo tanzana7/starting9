@@ -1,5 +1,6 @@
 export const TEST_SITE_ID = "starting9-isolated-v1";
 export const TEST_AUTH_WORKER = "starting9-test-auth";
+export const TEST_CLOUDFLARE_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
 export const TEST_PAGES_PROJECT = "s9simu";
 export const TEST_AUTH_DB_NAME = "starting9-test-auth-db";
 export const TEST_AUDIT_DB_NAME = "starting9-test-audit-db";
@@ -28,15 +29,23 @@ export function isIsolatedTestEnvironment(env = {}) {
     && Boolean(env.AUDIT_DB);
 }
 
+export function isAuthorizedFightersRehearsalResetEnvironment(env = {}) {
+  return isIsolatedTestEnvironment(env)
+    && env.TEST_EXPECTED_ACCOUNT_ID === TEST_CLOUDFLARE_ACCOUNT_ID;
+}
+
 export function assertTestAuthConfig(config) {
   const databases = new Map((config.d1_databases || []).map((row) => [row.binding, row]));
   if (config.name !== TEST_AUTH_WORKER) throw new Error("test Worker name must be isolated");
-  if (config.account_id !== "02580fab1c09e144db7da89478e252c8") throw new Error("test Worker account must be TARGET");
+  if (config.account_id !== TEST_CLOUDFLARE_ACCOUNT_ID) throw new Error("test Worker account must be TARGET");
   if (config.main !== "tooling/test-site/worker.js") throw new Error("test Worker must use the test-only entrypoint");
   if ((config.triggers?.crons || []).length !== 0) throw new Error("test Worker must have no Cron triggers");
   if ((config.services || []).length !== 0) throw new Error("test Worker must not have service bindings");
   if (config.vars?.ENVIRONMENT !== "test" || config.vars?.TEST_SITE_ID !== TEST_SITE_ID) {
     throw new Error("test Worker environment identity is required");
+  }
+  if (config.vars?.TEST_EXPECTED_ACCOUNT_ID !== TEST_CLOUDFLARE_ACCOUNT_ID) {
+    throw new Error("test Worker runtime account identity must be pinned to TARGET");
   }
   if (config.vars?.NPB_FETCH_DISABLED !== "true") throw new Error("test Worker must disable external NPB fetches");
   const auth = databases.get("AUTH_DB");

@@ -571,8 +571,20 @@ async function runFightersOperationalRehearsal() {
   const fightersContestId = String(fightersBeforeJobs.payload.contestId || "");
   const hawksContestId = String(hawksBeforeJobs.payload.contestId || "");
   assert.ok(fightersContestId && hawksContestId && fightersContestId !== hawksContestId);
-  assert.notEqual(readScenarioState(fightersBeforeStatus.payload.game).effectiveState, "published",
-    "rehearsal must never erase an already-published Fighters target");
+  const fightersSnapshot = await call(`/api/test/rehearsal/snapshot${fightersQuery}`, { admin: true });
+  const hawksSnapshot = await call(`/api/test/rehearsal/snapshot${hawksQuery}`, { admin: true });
+  for (const [teamKey, identity] of [["fighters", fightersSnapshot.payload], ["hawks", hawksSnapshot.payload]]) {
+    assert.equal(identity.environment, "test");
+    assert.equal(identity.expectedAccountId, "02580fab1c09e144db7da89478e252c8");
+    assert.equal(identity.workerName, "starting9-test-auth");
+    assert.equal(identity.authDatabaseId, "7ea1fa14-ffc0-4404-8a65-5dbb8218f368");
+    assert.equal(identity.siteId, "starting9-isolated-v1");
+    assert.equal(identity.targetTeam, teamKey);
+  }
+  assert.equal(fightersSnapshot.payload.snapshot.contestId, fightersContestId);
+  assert.equal(readScenarioState(fightersBeforeStatus.payload.game).effectiveState, "published",
+    "this rehearsal must exercise the explicitly authorized published-target reset");
+  assert.equal(fightersBeforeStatus.payload.game.publication_status, "published");
   assert.equal(readScenarioState(hawksBeforeStatus.payload.game).effectiveState, "published",
     "the prior Hawks sibling publication must be preserved");
   assert.equal(hawksBeforeStatus.payload.game.publication_status, "published");

@@ -8,6 +8,7 @@
   "vars": {
     "ENVIRONMENT": "test",
     "TEST_SITE_ID": "starting9-isolated-v1",
+    "TEST_EXPECTED_ACCOUNT_ID": "02580fab1c09e144db7da89478e252c8",
     "TEST_WORKER_NAME": "starting9-test-auth",
     "TEST_AUTH_DB_ID": "7ea1fa14-ffc0-4404-8a65-5dbb8218f368",
     "TEST_AUDIT_DB_ID": "a18c6cf9-a238-4059-a5ef-784f248e225e",

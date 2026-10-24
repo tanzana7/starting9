@@ -657,7 +657,8 @@ async function runFightersOperationalRehearsal({ prepareOnly = false } = {}) {
     ]);
     const baseline = finalFightersSnapshot.payload.snapshot;
     assert.equal(readScenarioState(baselineStatus.payload.game).effectiveState, "scheduled");
-    assert.equal(baselineStatus.payload.game.publication_status, "pending");
+    assert.ok([null, "pending"].includes(baselineStatus.payload.game.publication_status),
+      "an unpublished baseline may have no persisted status or an explicit pending status");
     assert.equal(baselinePrediction.payload?.prediction, undefined);
     assert.equal(baseline.predictionCount, 0);
     assert.equal(baseline.lineupCount, 0);

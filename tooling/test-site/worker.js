@@ -3,7 +3,11 @@ import { planMainWorkflowJobs, runGameAutomationV3 } from "../../game-automation
 import { transitionV3State } from "../../backend/automation-v3/repository.js";
 import { createContestId } from "../../backend/contest-identity.js";
 import { V3_TIMING } from "../../backend/automation-v3/constants.js";
-import { isIsolatedTestEnvironment, validatePublishedScenario } from "./isolation.js";
+import {
+  isAuthorizedFightersRehearsalResetEnvironment,
+  isIsolatedTestEnvironment,
+  validatePublishedScenario
+} from "./isolation.js";
 import { verifyS9SimuRunToken } from "./github-oidc.js";
 import { assertDistinctTestTeamIdentity, testTeamFixture, TEST_TEAMS, TEST_TEAM_KEYS, TEST_TEAM_GROUPS } from "./teams.js";
 import { simulatorGameDate } from "./simu-npb/source.js";
@@ -347,9 +351,6 @@ async function resetFightersRehearsalContest(db, {
   if (targetBefore.stateRowCount !== 1 || siblingBefore.stateRowCount !== 1) {
     return { ok: false, status: 409, code: "REHEARSAL_CONTEST_STATE_MISSING" };
   }
-  if (targetBefore.state === "published" || targetBefore.publicationStatus === "published") {
-    return { ok: false, status: 409, code: "REHEARSAL_TARGET_ALREADY_PUBLISHED", targetBefore };
-  }
   if (siblingBefore.state !== "published" || siblingBefore.publicationStatus !== "published"
       || siblingBefore.publicationCount !== 1) {
     return { ok: false, status: 409, code: "PUBLISHED_SIBLING_REQUIRED", siblingBefore };
@@ -365,15 +366,27 @@ async function resetFightersRehearsalContest(db, {
   }
 
   const statements = [
-    // D1 batch is transactional. Re-check the publication guard inside that
-    // transaction so a target finalized after the read-only preflight cannot
-    // be erased; the invalid sentinel intentionally violates the state CHECK.
+    // D1 batch is transactional. This one-shot capability intentionally resets
+    // a published Fighters contest, but rechecks exact team/contest ownership
+    // and the published Hawks sibling in the transaction before deleting rows.
+    // The invalid sentinel violates the state CHECK and rolls back the batch if
+    // those identities changed after the read-only preflight.
     db.prepare(`UPDATE contest_automation_v3_state
-      SET state = CASE WHEN state <> 'published'
-        AND NOT EXISTS (SELECT 1 FROM contest_ranking_games
-          WHERE contest_id = ?1 AND publication_status = 'published')
+      SET state = CASE WHEN EXISTS (SELECT 1 FROM game_contests AS target
+          WHERE target.contest_id = ?1 AND target.internal_game_id = ?2
+            AND target.target_team_key = 'fighters')
+        AND EXISTS (SELECT 1 FROM game_contests AS sibling
+          WHERE sibling.contest_id = ?3 AND sibling.internal_game_id = ?2
+            AND sibling.target_team_key = 'hawks')
+        AND EXISTS (SELECT 1 FROM contest_automation_v3_state AS sibling_state
+          WHERE sibling_state.contest_id = ?3 AND sibling_state.internal_game_id = ?2
+            AND sibling_state.state = 'published')
+        AND EXISTS (SELECT 1 FROM contest_ranking_games AS sibling_publication
+          WHERE sibling_publication.contest_id = ?3 AND sibling_publication.internal_game_id = ?2
+            AND sibling_publication.publication_status = 'published')
         THEN 'scheduled' ELSE 'unsafe-reset' END
-      WHERE contest_id = ?1 AND internal_game_id = ?2`).bind(expectedContestId, internalGameId),
+      WHERE contest_id = ?1 AND internal_game_id = ?2`)
+      .bind(expectedContestId, internalGameId, expectedSiblingContestId),
     db.prepare(`DELETE FROM contest_score_attempt_test_rows WHERE attempt_id IN
       (SELECT attempt_id FROM contest_score_attempts WHERE contest_id = ?1)`).bind(expectedContestId),
     ...REHEARSAL_CONTEST_RESET_TABLES.map((table) => db.prepare(
@@ -1139,10 +1152,15 @@ async function handleTestControl(request, env, ctx) {
       return jsonResponse({ ok: false, code: "REHEARSAL_GAME_IDENTITY_MISMATCH" }, 409, origin);
     }
     const snapshot = await readRehearsalContestSnapshot(env.AUTH_DB, { internalGameId: INTERNAL_GAME_ID, contestId: CONTEST_ID });
-    return jsonResponse({ ok: true, snapshot }, 200, origin);
+    return jsonResponse({ ok: true, snapshot, environment: env.ENVIRONMENT,
+      expectedAccountId: env.TEST_EXPECTED_ACCOUNT_ID, workerName: env.TEST_WORKER_NAME,
+      authDatabaseId: env.TEST_AUTH_DB_ID, siteId: env.TEST_SITE_ID, targetTeam: targetTeam.key }, 200, origin);
   }
   if (url.pathname === "/api/test/rehearsal/reset-fighters" && request.method === "POST") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
+    if (!isAuthorizedFightersRehearsalResetEnvironment(env)) {
+      return jsonResponse({ ok: false, code: "REHEARSAL_TEST_ACCOUNT_REQUIRED" }, 404, origin);
+    }
     if (targetTeam.key !== "fighters") return jsonResponse({ ok: false, code: "REHEARSAL_TARGET_REQUIRED" }, 403, origin);
     const input = await request.json().catch(() => null);
     const result = await resetFightersRehearsalContest(env.AUTH_DB, {

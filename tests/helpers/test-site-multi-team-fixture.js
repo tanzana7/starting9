@@ -47,7 +47,7 @@ export async function createTestSiteMultiTeamFixture({ rosterPlayersByTeam = {} 
       VALUES ('team-test-session', 'team-test-user', ?, ?, '2099-01-01T00:00:00.000Z', ?)`).run(tokenHash, now, now);
     const config = JSON.parse(fs.readFileSync(new URL("../../wrangler.test-auth.jsonc", import.meta.url)));
     const env = { ...config.vars, S9SIMU_ENABLED: "false", AUTH_DB: d1(database), AUDIT_DB: d1(audit) };
-    async function request(team, path, body, method = body === undefined ? "GET" : "POST") {
+    async function request(team, path, body, method = body === undefined ? "GET" : "POST", { expectedStatus = 200 } = {}) {
       const worker = createTestTeamWorker(team, { rosterPlayers: rosterPlayersByTeam[team] || null });
       const response = await worker.fetch(new Request(`https://starting9-test-auth.internal${path}`, {
         method,
@@ -55,7 +55,7 @@ export async function createTestSiteMultiTeamFixture({ rosterPlayersByTeam = {} 
         body: body === undefined ? undefined : JSON.stringify(body)
       }), env, { waitUntil() {} });
       const result = await response.json();
-      assertOk(response, result, `${team} ${method} ${path}`);
+      assertOk(response, result, `${team} ${method} ${path}`, expectedStatus);
       return result;
     }
     return { database, audit, request, close() { database.close(); audit.close(); } };
@@ -66,6 +66,6 @@ export async function createTestSiteMultiTeamFixture({ rosterPlayersByTeam = {} 
   }
 }
 
-function assertOk(response, result, context = "request") {
-  if (!response.ok) throw new Error(`Test Site ${context} failed (${response.status}): ${JSON.stringify(result)}`);
+function assertOk(response, result, context = "request", expectedStatus = 200) {
+  if (response.status !== expectedStatus) throw new Error(`Test Site ${context} expected ${expectedStatus} (${response.status}): ${JSON.stringify(result)}`);
 }

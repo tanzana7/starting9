@@ -33,6 +33,24 @@ const CLEANUP_ORDER = Object.freeze([
   "probable_starters", "game_identifiers", "game_schedule_change_history", "detected_game_schedule", "contest_identity_backfill_issues",
   "game_contests", "games"
 ]);
+// The one-shot Fighters rehearsal must not use deleteScenarioRows(): that
+// helper intentionally removes a whole physical-game fixture. These tables
+// are contest-owned in the C-4 schema and are the only rows this reset may
+// remove. Game-level schedule, identity, roster, workflow-log, and audit rows
+// are deliberately excluded because they cannot be proven Fighters-only.
+const REHEARSAL_CONTEST_RESET_TABLES = Object.freeze([
+  "contest_score_attempt_prediction_rows", "contest_score_attempts",
+  "contest_prediction_score_revisions", "contest_ranking_reflection_revisions",
+  "contest_game_rescore_audits", "contest_game_rescore_jobs", "contest_game_rescore_previews",
+  "contest_perfect_achievers", "contest_ranking_eligibility_history",
+  "contest_ranking_test_predictions", "contest_ranking_test_game_settings",
+  "contest_ranking_games", "contest_scoring_revisions", "game_lineups",
+  "contest_lineup_revisions", "predictions", "game_jobs_v3", "contest_automation_v3_state"
+]);
+const REHEARSAL_CONTEST_SNAPSHOT_TABLES = Object.freeze([
+  ...REHEARSAL_CONTEST_RESET_TABLES,
+  "contest_score_attempt_test_rows"
+]);
 
 const TEST_PLAYERS = Object.freeze(Array.from({ length: 15 }, (_, index) => Object.freeze({
   playerId: `npb:${playerPrefix}${String(index + 1).padStart(4, "0")}`,
@@ -261,6 +279,126 @@ async function currentScenarioGame(db) {
     LEFT JOIN contest_ranking_games AS ranking ON ranking.internal_game_id = games.internal_game_id
       AND ranking.contest_id = contest.contest_id
     WHERE games.internal_game_id = ?1 LIMIT 1`).bind(INTERNAL_GAME_ID, targetTeam.key).first();
+}
+
+async function readRehearsalContestSnapshot(db, { internalGameId, contestId }) {
+  const rowsByTable = {};
+  for (const table of REHEARSAL_CONTEST_SNAPSHOT_TABLES) {
+    const rows = table === "contest_score_attempt_test_rows"
+      ? await db.prepare(`SELECT child.* FROM contest_score_attempt_test_rows AS child
+          JOIN contest_score_attempts AS attempt ON attempt.attempt_id = child.attempt_id
+         WHERE attempt.contest_id = ?1`).bind(contestId).all()
+      : await db.prepare(`SELECT * FROM ${table} WHERE contest_id = ?1`).bind(contestId).all();
+    rowsByTable[table] = (rows.results || []).map((row) => ({ ...row }))
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  }
+  const state = rowsByTable.contest_automation_v3_state[0]?.state || "scheduled";
+  const publication = rowsByTable.contest_ranking_games[0]?.publication_status || null;
+  const fingerprintInput = JSON.stringify({ internalGameId, contestId, rowsByTable });
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(fingerprintInput));
+  const fingerprint = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return {
+    internalGameId,
+    contestId,
+    state,
+    stateRowCount: rowsByTable.contest_automation_v3_state.length,
+    publicationStatus: publication,
+    predictionCount: rowsByTable.predictions.length,
+    lineupCount: rowsByTable.game_lineups.length + rowsByTable.contest_lineup_revisions.length,
+    scoringCount: rowsByTable.contest_scoring_revisions.length
+      + rowsByTable.contest_score_attempts.length + rowsByTable.contest_score_attempt_prediction_rows.length
+      + rowsByTable.contest_score_attempt_test_rows.length + rowsByTable.contest_prediction_score_revisions.length,
+    rankingCount: rowsByTable.contest_ranking_reflection_revisions.length
+      + rowsByTable.contest_ranking_eligibility_history.length + rowsByTable.contest_perfect_achievers.length
+      + rowsByTable.contest_ranking_test_predictions.length + rowsByTable.contest_ranking_test_game_settings.length,
+    publicationCount: rowsByTable.contest_ranking_games.length,
+    formalJobCount: rowsByTable.game_jobs_v3.length,
+    fingerprint
+  };
+}
+
+async function resetFightersRehearsalContest(db, {
+  internalGameId, expectedContestId, expectedSiblingContestId
+}) {
+  const game = await db.prepare(`SELECT games.internal_game_id, games.game_date, games.start_time,
+      COALESCE((SELECT identifier_value FROM game_identifiers
+        WHERE internal_game_id = games.internal_game_id AND provider = 'npb'
+          AND identifier_type = 'npb_game_code'
+        ORDER BY updated_at DESC, id DESC LIMIT 1), games.npb_game_code) AS provider_game_id
+    FROM games WHERE games.internal_game_id = ?1 LIMIT 1`).bind(internalGameId).first();
+  const identityFailure = !game ? "game_missing"
+    : game.provider_game_id !== "g-t-4" ? "provider_game_code_mismatch"
+      : game.game_date !== "2026-10-25" ? "game_date_mismatch"
+        : Date.parse(String(game.start_time || "")) !== Date.parse("2026-10-25T06:00:00.000Z")
+          ? "start_time_mismatch" : "";
+  if (identityFailure) {
+    return { ok: false, status: 409, code: "REHEARSAL_GAME_IDENTITY_MISMATCH", reason: identityFailure };
+  }
+  const contests = await db.prepare(`SELECT contest_id, target_team_key FROM game_contests
+    WHERE internal_game_id = ?1 ORDER BY target_team_key`).bind(internalGameId).all();
+  const byTeam = new Map((contests.results || []).map((row) => [String(row.target_team_key), String(row.contest_id)]));
+  if (byTeam.size !== 2 || !byTeam.has("fighters") || !byTeam.has("hawks")
+      || byTeam.get("fighters") !== expectedContestId || byTeam.get("hawks") !== expectedSiblingContestId) {
+    return { ok: false, status: 409, code: "REHEARSAL_CONTEST_IDENTITY_MISMATCH" };
+  }
+
+  const targetBefore = await readRehearsalContestSnapshot(db, { internalGameId, contestId: expectedContestId });
+  const siblingBefore = await readRehearsalContestSnapshot(db, { internalGameId, contestId: expectedSiblingContestId });
+  if (targetBefore.stateRowCount !== 1 || siblingBefore.stateRowCount !== 1) {
+    return { ok: false, status: 409, code: "REHEARSAL_CONTEST_STATE_MISSING" };
+  }
+  if (targetBefore.state === "published" || targetBefore.publicationStatus === "published") {
+    return { ok: false, status: 409, code: "REHEARSAL_TARGET_ALREADY_PUBLISHED", targetBefore };
+  }
+  if (siblingBefore.state !== "published" || siblingBefore.publicationStatus !== "published"
+      || siblingBefore.publicationCount !== 1) {
+    return { ok: false, status: 409, code: "PUBLISHED_SIBLING_REQUIRED", siblingBefore };
+  }
+
+  // Verify the reset schema before the first write. In particular, do not
+  // fall back to internal_game_id when a table cannot prove contest ownership.
+  for (const table of REHEARSAL_CONTEST_RESET_TABLES) {
+    const columns = await db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!(columns.results || []).some((column) => column.name === "contest_id")) {
+      return { ok: false, status: 500, code: "REHEARSAL_RESET_SCOPE_UNAVAILABLE", table };
+    }
+  }
+
+  const statements = [
+    // D1 batch is transactional. Re-check the publication guard inside that
+    // transaction so a target finalized after the read-only preflight cannot
+    // be erased; the invalid sentinel intentionally violates the state CHECK.
+    db.prepare(`UPDATE contest_automation_v3_state
+      SET state = CASE WHEN state <> 'published'
+        AND NOT EXISTS (SELECT 1 FROM contest_ranking_games
+          WHERE contest_id = ?1 AND publication_status = 'published')
+        THEN 'scheduled' ELSE 'unsafe-reset' END
+      WHERE contest_id = ?1 AND internal_game_id = ?2`).bind(expectedContestId, internalGameId),
+    db.prepare(`DELETE FROM contest_score_attempt_test_rows WHERE attempt_id IN
+      (SELECT attempt_id FROM contest_score_attempts WHERE contest_id = ?1)`).bind(expectedContestId),
+    ...REHEARSAL_CONTEST_RESET_TABLES.map((table) => db.prepare(
+      `DELETE FROM ${table} WHERE contest_id = ?1`
+    ).bind(expectedContestId)),
+    db.prepare(`INSERT INTO contest_automation_v3_state
+      (contest_id, internal_game_id, state, created_at, updated_at)
+      VALUES (?1, ?2, 'scheduled', ?3, ?3)`)
+      .bind(expectedContestId, internalGameId, new Date().toISOString())
+  ];
+  await db.batch(statements);
+
+  // game_automation_v3_audit and game_workflow_logs have no contest identity;
+  // preserve their shared-game history rather than deleting sibling evidence.
+  const targetAfter = await readRehearsalContestSnapshot(db, { internalGameId, contestId: expectedContestId });
+  const siblingAfter = await readRehearsalContestSnapshot(db, { internalGameId, contestId: expectedSiblingContestId });
+  if (targetAfter.state !== "scheduled" || targetAfter.predictionCount !== 0 || targetAfter.lineupCount !== 0
+      || targetAfter.scoringCount !== 0 || targetAfter.rankingCount !== 0
+      || targetAfter.publicationCount !== 0 || targetAfter.formalJobCount !== 0) {
+    return { ok: false, status: 500, code: "REHEARSAL_TARGET_RESET_INCOMPLETE", targetAfter };
+  }
+  if (JSON.stringify(siblingBefore) !== JSON.stringify(siblingAfter)) {
+    return { ok: false, status: 500, code: "REHEARSAL_SIBLING_CHANGED", siblingBefore, siblingAfter };
+  }
+  return { ok: true, targetBefore, targetAfter, siblingBefore, siblingAfter };
 }
 
 async function markManualLineupReadyScenario(db) {
@@ -990,6 +1128,29 @@ async function handleTestControl(request, env, ctx) {
   }
   if (url.pathname === "/api/test/status" && request.method === "GET") {
     return jsonResponse({ ok: true, game: await currentScenarioGame(env.AUTH_DB) }, 200, origin);
+  }
+  if (url.pathname === "/api/test/rehearsal/snapshot" && request.method === "GET") {
+    if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
+    const game = await env.AUTH_DB.prepare(`SELECT COALESCE((SELECT identifier_value FROM game_identifiers
+        WHERE internal_game_id = ?1 AND provider = 'npb' AND identifier_type = 'npb_game_code'
+        ORDER BY updated_at DESC, id DESC LIMIT 1), games.npb_game_code) AS provider_game_id
+      FROM games WHERE internal_game_id = ?1 LIMIT 1`).bind(INTERNAL_GAME_ID).first();
+    if (game?.provider_game_id !== "g-t-4" || !["hawks", "fighters"].includes(targetTeam.key)) {
+      return jsonResponse({ ok: false, code: "REHEARSAL_GAME_IDENTITY_MISMATCH" }, 409, origin);
+    }
+    const snapshot = await readRehearsalContestSnapshot(env.AUTH_DB, { internalGameId: INTERNAL_GAME_ID, contestId: CONTEST_ID });
+    return jsonResponse({ ok: true, snapshot }, 200, origin);
+  }
+  if (url.pathname === "/api/test/rehearsal/reset-fighters" && request.method === "POST") {
+    if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
+    if (targetTeam.key !== "fighters") return jsonResponse({ ok: false, code: "REHEARSAL_TARGET_REQUIRED" }, 403, origin);
+    const input = await request.json().catch(() => null);
+    const result = await resetFightersRehearsalContest(env.AUTH_DB, {
+      internalGameId: INTERNAL_GAME_ID,
+      expectedContestId: String(input?.expectedContestId || ""),
+      expectedSiblingContestId: String(input?.expectedSiblingContestId || "")
+    });
+    return jsonResponse(result, result.status || 200, origin);
   }
   if (url.pathname === "/api/test/jobs" && request.method === "GET") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);

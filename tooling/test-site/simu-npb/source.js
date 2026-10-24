@@ -1,5 +1,5 @@
 import { SIMULATED_NPB_ROSTERS_2026 } from "./rosters.js";
-import { FIGHTERS_REHEARSAL, isFightersRehearsalDay, simulatorRehearsalLifecycle } from "../unattended-rehearsal.js";
+import { FIGHTERS_REHEARSAL, isFightersRehearsalDay, simulatorRehearsalLifecycle } from "../rehearsal-clock.js";
 
 const POSITION_SEQUENCE = Object.freeze(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const LINEUP_KEY_PREFIX = "lineup:v1:";

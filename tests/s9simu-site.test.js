@@ -205,6 +205,7 @@ test("the generated Simulated NPB build owns simulator routes without cloning th
   assert.match(builder, /simu-npb/);
   assert.match(builder, /routeManifest\.include/);
   assert.match(builder, /simulatorSourceDirectory, "rosters\.js"/);
+  assert.match(builder, /rehearsalClockSource/);
   assert.doesNotMatch(builder, /TEST_SITE_PAGE_FILES|SHARED_PAGE_DIRECTORIES|starting9AppDirectory|test-environment\.css/);
   assert.equal(productionRoutes.include.includes("/simu-npb/*"), false);
   assert.doesNotMatch(productionBuilder, /simu-npb|s9simu\.pages\.dev/);

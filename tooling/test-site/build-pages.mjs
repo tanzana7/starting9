@@ -9,6 +9,7 @@ const pagesProject = path.join(root, "dist", "test-site-project");
 const simulatorAssetsDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "static");
 const simulatorSourceDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "simu-npb");
 const simulatorFunctionsDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "pages-project", "functions", "simu-npb");
+const rehearsalClockSource = path.join(path.dirname(fileURLToPath(import.meta.url)), "rehearsal-clock.js");
 const simulatorAssets = ["simu-npb.css", "simu-npb-lineup-editor.js"];
 
 function resetGeneratedDirectory(directory, expectedName) {
@@ -64,6 +65,7 @@ fs.copyFileSync(path.join(simulatorSourceDirectory, "rosters.js"), path.join(sim
 fs.copyFileSync(path.join(simulatorFunctionsDirectory, "[[path]].js"), path.join(simulatorFunctionOutput, "[[path]].js"));
 fs.copyFileSync(path.join(simulatorFunctionsDirectory, "..", "index.js"), path.join(pagesProject, "functions", "index.js"));
 fs.copyFileSync(path.join(simulatorFunctionsDirectory, "..", "simu-admin-auth.js"), path.join(pagesProject, "functions", "simu-admin-auth.js"));
+fs.copyFileSync(rehearsalClockSource, path.join(pagesProject, "functions", "rehearsal-clock.js"));
 const simulatorTeamModule = `export const TEST_TEAMS = ${JSON.stringify(TEST_TEAMS)};\nexport const TEST_TEAM_GROUPS = ${JSON.stringify(TEST_TEAM_GROUPS)};\n`;
 fs.writeFileSync(path.join(simulatorFunctionOutput, "teams.js"), simulatorTeamModule);
 const pagesConfigPath = path.join(root, "tooling", "test-site", "pages-project", "wrangler.jsonc");

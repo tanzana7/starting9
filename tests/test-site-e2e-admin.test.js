@@ -8,6 +8,8 @@ import { classifyE2ECleanupResult } from "../tooling/test-site/cleanup-contract.
 import { handleSimulatedNpbRequest, simulatorGameDate } from "../tooling/test-site/simu-npb/source.js";
 import { TEST_TEAM_GROUPS, TEST_TEAMS, testPredictionPlayerId } from "../tooling/test-site/teams.js";
 import { transitionV3State } from "../backend/automation-v3/repository.js";
+import { buildSyntheticPredictions } from "../tooling/test-site/auto-prediction-seeder.js";
+import { V3_TIMING } from "../backend/automation-v3/constants.js";
 
 let requestNumber = 0;
 const GITHUB_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks";
@@ -533,6 +535,162 @@ test("parsed simulator roster IDs are trusted by the same Test prediction save p
   });
   assert.equal(cleanup.response.status, 200);
   assert.equal(cleanup.payload.removed, false);
+});
+
+test("Fighters auto-seeder exercises normal prediction writes, exact cutoff, and the full isolated formal pipeline", async (t) => {
+  const f = await fixture();
+  let simulatorLineupState = "pre-lineup";
+  t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
+  f.env.S9SIMU_ENABLED = "true";
+  f.env.S9SIMU_BASE_URL = "https://s9simu.pages.dev";
+  f.env.NPB_SOURCE = "simulator";
+  f.env.ENABLE_GAME_AUTOMATION_V3 = "true";
+  f.setFetch(async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.href === GITHUB_JWKS_URL) return Response.json({ keys: [oidcJwk] });
+    if (url.origin !== "https://s9simu.pages.dev") return f.originalFetch(input, init);
+    return handleSimulatedNpbRequest(new Request(url, init), {
+      SIMU_NPB_STATE: {
+        async get(key) { return key === "lineup-state" ? simulatorLineupState : null; },
+        async put(_key, value) { simulatorLineupState = value; }
+      }
+    }, { TEST_TEAMS, TEST_TEAM_GROUPS });
+  });
+
+  const provision = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
+  assert.equal(provision.response.status, 201);
+  const adminCookie = provision.response.headers.get("Set-Cookie").split(";", 1)[0];
+  const schedule = await f.request("/api/test/simu/schedule?testTeam=fighters", {
+    method: "POST", body: {}, cookie: adminCookie
+  });
+  assert.equal(schedule.response.status, 200);
+  const game = schedule.payload.physicalGames.find((row) => row.game_code === "g-t-4");
+  assert.ok(game);
+  assert.equal(game.home_team, TEST_TEAMS.hawks.key);
+  assert.equal(game.away_team, TEST_TEAMS.fighters.key);
+  assert.equal(new Date(game.start_at).getUTCHours(), 6, "15:00 JST simulator start is preserved");
+  const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=fighters&simuNpb=1`;
+  const rosterResult = await f.request(`/api/game-day-roster${query}`, { cookie: adminCookie });
+  assert.equal(rosterResult.response.status, 200);
+  const roster = rosterResult.payload.players;
+  assert.equal(roster.length, 15);
+  assert.ok(roster.every((player) => player.teamCode === "fighters" && player.teamId === TEST_TEAMS.fighters.playerTeamId));
+  const jobs = await f.request(`/api/test/jobs${query}`, { cookie: adminCookie });
+  const contestId = jobs.payload.contestId;
+  const seed = 20261025;
+  const generated = buildSyntheticPredictions({ contestId, targetTeam: "fighters", roster, userCount: 10, seed });
+
+  const createdAt = new Date().toISOString();
+  const users = [];
+  for (let index = 0; index < 10; index += 1) {
+    const userId = `fighters-auto-user-${index + 1}`;
+    const username = `fighters-auto-${String(index + 1).padStart(2, "0")}`;
+    const sessionToken = `synthetic-session-20261025-${String(index + 1).padStart(2, "0")}`;
+    const tokenHash = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sessionToken))).toString("base64url");
+    f.database.prepare(`INSERT INTO users
+      (id, username, username_normalized, password_hash, password_salt, password_iterations, status, role, created_at, updated_at)
+      VALUES (?, ?, ?, 'test-only', 'test-only', 1, 'active', 'user', ?, ?)`).run(userId, username, username, createdAt, createdAt);
+    f.database.prepare(`INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at, last_used_at)
+      VALUES (?, ?, ?, ?, '2099-01-01T00:00:00.000Z', ?)`).run(`fighters-auto-session-${index + 1}`, userId, tokenHash, createdAt, createdAt);
+    users.push({ username, session: `s9_session=${sessionToken}` });
+  }
+
+  const startAt = new Date(game.start_at);
+  const cutoff = new Date(startAt.getTime() - V3_TIMING.predictionDeadlineMinutes * 60_000);
+  const cutoffMinus1 = new Date(cutoff.getTime() - 1);
+  const cutoffPlus1 = new Date(cutoff.getTime() + 1);
+  const submitAt = async (user, prediction, logicalNow) => f.request(`/api/test/prediction-write${query}`, {
+    method: "POST", cookie: adminCookie,
+    body: { sessionCookie: user.session, prediction, logicalNow: logicalNow.toISOString() }
+  });
+  const unauthenticatedWrite = await f.request(`/api/test/prediction-write${query}`, {
+    method: "POST", body: { sessionCookie: users[0].session, prediction: generated[0].prediction, logicalNow: cutoffMinus1.toISOString() }
+  });
+  assert.equal(unauthenticatedWrite.response.status, 401);
+  assert.equal(unauthenticatedWrite.payload.code, "ADMIN_REQUIRED");
+  const outOfWindowWrite = await submitAt(users[0], generated[0].prediction, new Date(cutoff.getTime() + 2 * 60_000));
+  assert.equal(outOfWindowWrite.response.status, 400);
+  assert.equal(outOfWindowWrite.payload.code, "TEST_CLOCK_OUT_OF_WINDOW");
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM predictions WHERE internal_game_id = ? AND contest_id = ?")
+    .get(game.internal_game_id, contestId).count, 0, "rejected test clocks must not reach the ordinary prediction writer");
+  for (let index = 0; index < generated.length; index += 1) {
+    const saved = await submitAt(users[index], generated[index].prediction, cutoffMinus1);
+    assert.equal(saved.response.status, 200);
+    assert.equal(saved.payload.ok, true, generated[index].label);
+  }
+  const cutoffWrite = await submitAt(users[0], generated[0].prediction, cutoff);
+  const lateWrite = await submitAt(users[0], generated[0].prediction, cutoffPlus1);
+  for (const rejected of [cutoffWrite, lateWrite]) {
+    assert.equal(rejected.payload.ok, false);
+    assert.equal(rejected.payload.status, 409);
+    assert.equal(rejected.payload.code, "PREDICTION_DEADLINE_PASSED");
+  }
+  for (const user of users) {
+    const read = await f.request(`/api/predictions/current${query}`, { cookie: user.session });
+    assert.equal(read.response.status, 200);
+    assert.equal(read.payload.prediction.lineup.length, 9);
+  }
+
+  const advanceTo = async (scenario, now, expectedState) => {
+    let last;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      last = await f.request(`/api/test/scenario${query}`, {
+        method: "POST", cookie: adminCookie,
+        body: { scenario, stageOnly: true, now: now.toISOString() }
+      });
+      if (last.payload.game?.state === expectedState) break;
+    }
+    assert.equal(last.response.status, 200, `${scenario}: ${JSON.stringify(last.payload)}`);
+    assert.equal(last.payload.game.state, expectedState, `${scenario}: ${JSON.stringify(last.payload.pipelineDiagnostics || null)}`);
+    return last.payload.game;
+  };
+  await advanceTo("closed", cutoff, "prediction_closed");
+  simulatorLineupState = "available";
+  const lineupAt = new Date(startAt.getTime() + 10 * 60_000);
+  await advanceTo("lineup-captured", lineupAt, "lineup_ready");
+  const scoringRun = await f.request(`/api/test/scenario${query}`, {
+    method: "POST", cookie: adminCookie,
+    body: { scenario: "scored", stageOnly: true, now: lineupAt.toISOString() }
+  });
+  assert.equal(scoringRun.response.status, 200, JSON.stringify(scoringRun.payload));
+  assert.ok((await f.request(`/api/test/jobs${query}`, { cookie: adminCookie })).payload.jobs
+    .some((job) => job.job_type === "score" && job.status === "completed"));
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM predictions WHERE internal_game_id = ? AND contest_id = ? AND status = 'scored'")
+    .get(game.internal_game_id, contestId).count, 10);
+  await advanceTo("ranked", lineupAt, "ranked");
+  await advanceTo("published", lineupAt, "published");
+
+  const scores = [];
+  for (const user of users) {
+    const result = await f.request(`/api/results/games/${encodeURIComponent(game.internal_game_id)}${query}`, { cookie: user.session });
+    assert.equal(result.response.status, 200);
+    assert.equal(result.payload.resultsPublished, true);
+    assert.equal(result.payload.actualLineup.length, 9);
+    scores.push(Number(result.payload.score));
+  }
+  assert.equal(scores.length, 10);
+  assert.equal(scores[0], 99, "the perfect-like first prediction scores against the official default lineup");
+  assert.ok(new Set(scores).size > 1, "normal scoring creates deterministic ranking-relevant variation");
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM predictions WHERE internal_game_id = ? AND contest_id = ? AND status = 'scored'")
+    .get(game.internal_game_id, contestId).count, 10);
+  assert.equal(f.database.prepare("SELECT publication_status FROM contest_ranking_games WHERE internal_game_id = ? AND contest_id = ?")
+    .get(game.internal_game_id, contestId).publication_status, "published");
+  const finalJobs = (await f.request(`/api/test/jobs${query}`, { cookie: adminCookie })).payload.jobs;
+  for (const type of ["prediction_close", "lineup_fetch", "lineup_finalize", "score", "ranking_rebuild", "publish"]) {
+    assert.ok(finalJobs.some((job) => job.job_type === type && job.status === "completed"), `${type}: formal job completed`);
+  }
+  assert.ok(finalJobs.every((job) => !["claimed", "retry_wait", "failed"].includes(job.status)));
+  const sibling = await f.request(`/api/test/status?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=hawks&simuNpb=1`);
+  assert.equal(sibling.payload.game.state || "scheduled", "scheduled");
+  for (const user of users) {
+    const logout = await f.request("/api/auth/logout?testTeam=fighters", { method: "POST", cookie: user.session });
+    assert.equal(logout.response.status, 200);
+  }
+  const cleanup = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "cleanup" }, cookie: adminCookie
+  });
+  assert.equal(cleanup.response.status, 200);
+  assert.ok(["deleted", "replay-blocked"].includes(classifyE2ECleanupResult(cleanup.payload)));
 });
 
 test("simulator provider identity resolves every persisted game, both contests, and game-scoped cleanup", async (t) => {

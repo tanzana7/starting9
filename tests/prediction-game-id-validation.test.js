@@ -271,7 +271,7 @@ test("アカウント保存・復元・削除は共通API resolverを使う", ()
   assert.match(put, /resolveApiGameReference\(env\.AUTH_DB, input\?\.gameId\)/);
   assert.match(get, /resolveApiGameReference\(/);
   assert.match(remove, /resolveApiGameReference\(/);
-  assert.match(put, /createPredictionDeadlineRejection\(metadata, cors\)/);
+  assert.match(put, /createPredictionDeadlineRejection\(metadata, cors, writeNow\)/);
   assert.match(remove, /createPredictionDeadlineRejection\(metadata, cors\)/);
 });
 

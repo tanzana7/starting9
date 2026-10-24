@@ -17,7 +17,9 @@ function testOnlyNotice() {
 export function simulatorGames(date, teams, groups) {
   return groups.map((group, index) => ({
     gameDate: date,
-    startAt: `${date}T18:00:00+09:00`,
+    // The Fighters rehearsal uses the existing Hawks/Fighters physical game
+    // as a 15:00 fixture; all other simulator games retain their 18:00 slot.
+    startAt: `${date}T${group.homeKey === "hawks" && group.awayKey === "fighters" ? "15:00" : "18:00"}:00+09:00`,
     homeTeam: teams[group.homeKey].displayName,
     awayTeam: teams[group.awayKey].displayName,
     homeKey: group.homeKey,

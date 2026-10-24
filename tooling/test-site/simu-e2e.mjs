@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { TEST_TEAM_GROUPS, TEST_TEAMS, testPredictionPlayerId } from "./teams.js";
+import { buildSyntheticPredictions } from "./auto-prediction-seeder.js";
 import { assertTestAuthConfig, TEST_AUTH_DB_ID, TEST_AUDIT_DB_ID } from "./isolation.js";
 import { classifyE2ECleanupResult } from "./cleanup-contract.js";
 import { readScenarioState } from "./scenario-state.js";
+import { V3_TIMING } from "../../backend/automation-v3/constants.js";
 import fs from "node:fs";
 
 const SITE_ORIGIN = "https://s9simu.pages.dev";
 const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
 const RUN_MODE = String(process.env.S9SIMU_MODE || "full").trim().toLowerCase();
-assert.ok(["full", "schedule-check", "roster-only", "job-only", "sibling-check", "admin-diagnose", "admin-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, roster-only, job-only, sibling-check, admin-diagnose, or admin-check");
+assert.ok(["full", "schedule-check", "roster-only", "job-only", "sibling-check", "fighters-rehearsal", "admin-diagnose", "admin-check"].includes(RUN_MODE), "S9SIMU_MODE must be full, schedule-check, roster-only, job-only, sibling-check, fighters-rehearsal, admin-diagnose, or admin-check");
 
 const config = JSON.parse(fs.readFileSync(new URL("../../wrangler.test-auth.jsonc", import.meta.url), "utf8"));
 assertTestAuthConfig(config);
@@ -31,6 +33,7 @@ let primaryError = null;
 let cleanupError = null;
 let publishedContests = 0;
 let lastScheduleDiagnostics = null;
+const syntheticSessions = [];
 
 async function call(path, { method = "GET", body, admin = false, authorizationToken = "", sessionCookie = "", expectedStatus = 200 } = {}) {
   const team = new URL(`https://local.invalid${path}`).searchParams.get("testTeam") || "fighters";
@@ -109,6 +112,42 @@ async function cleanupTemporaryAdmin() {
   cookie = "";
   githubOidcToken = "";
   temporaryAdminCreated = false;
+}
+
+async function registerSyntheticUsers(count, suffix) {
+  const sessions = [];
+  for (let index = 0; index < count; index += 1) {
+    // The public registration path is intentionally rate-limited. Respect its
+    // five-per-minute contract instead of adding a Test-only registration bypass.
+    if (index === 5) await new Promise((resolve) => setTimeout(resolve, 61_000));
+    const username = `s${String(index + 1).padStart(2, "0")}-${suffix}`;
+    const password = randomBytes(24).toString("base64url");
+    const registration = await call("/api/auth/register?testTeam=fighters", {
+      method: "POST",
+      body: { username, password, passwordConfirmation: password },
+      expectedStatus: 201
+    });
+    const session = registration.response.headers.get("Set-Cookie")?.split(";", 1)[0] || "";
+    assert.match(session, /^s9_session=/, "normal registration must establish a session");
+    sessions.push({ username, session });
+    syntheticSessions.push(session);
+  }
+  return sessions;
+}
+
+async function logoutSyntheticUsers() {
+  const sessions = syntheticSessions.splice(0);
+  const failures = [];
+  for (const sessionCookie of sessions) {
+    try {
+      await call("/api/auth/logout?testTeam=fighters", {
+        method: "POST", sessionCookie, expectedStatus: 200
+      });
+    } catch {
+      failures.push("logout_failed");
+    }
+  }
+  if (failures.length) throw new Error(`SYNTHETIC_SESSION_CLEANUP_FAILED:${failures.length}`);
 }
 
 async function runAdminReproducibilityCheck() {
@@ -510,6 +549,142 @@ async function runRosterOnlyCheck() {
   console.log(`S9SIMU_ROSTER_ONLY_COMPLETE: ${JSON.stringify({ providerGameId, internalGameId: game.internal_game_id, teams: [group.homeKey, group.awayKey], cleanup: "completed" })}`);
 }
 
+async function runFightersOperationalRehearsal() {
+  const physicalGames = await fetchSimulatorSchedule({ requireFreshSync: true });
+  const game = physicalGames.find((item) => item.game_code === "g-t-4");
+  assert.ok(game, "Fighters rehearsal requires the Hawks/Fighters physical game");
+  const group = simulatorGroupForGame(game);
+  assert.equal(group.homeKey, "hawks");
+  assert.equal(group.awayKey, "fighters");
+  const startAt = new Date(game.start_at);
+  assert.equal(startAt.toISOString(), "2026-10-25T06:00:00.000Z", "fixture must be 2026-10-25 15:00 JST");
+  const queryFor = (teamKey) => `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
+
+  // Preserve earlier Test results. Never reset a game in this one-shot mode.
+  for (const teamKey of [group.homeKey, group.awayKey]) {
+    const query = queryFor(teamKey);
+    const [jobs, status, prediction] = await Promise.all([
+      call(`/api/test/jobs${query}`, { admin: true }),
+      call(`/api/test/status${query}`),
+      call(`/api/predictions/current${query}`, { admin: true })
+    ]);
+    const state = readScenarioState(status.payload.game);
+    assert.equal(state.effectiveState, "scheduled", `${teamKey}: game must be at its fresh scheduled baseline`);
+    assert.equal(Boolean(prediction.payload?.prediction), false, `${teamKey}: no prior prediction may be overwritten`);
+    assert.ok((jobs.payload.jobs || []).every((job) => job.status === "pending" && Number(job.attempt_count) === 0),
+      `${teamKey}: only untouched scheduled formal jobs may exist before rehearsal`);
+  }
+
+  const fightersQuery = queryFor("fighters");
+  const rosterResponse = await call(`/api/game-day-roster${fightersQuery}`, { admin: true });
+  const roster = rosterResponse.payload.players || [];
+  assert.equal(roster.length, 15, "Fighters roster must contain 15 source players");
+  assert.ok(roster.every((player) => player.teamCode === "fighters"
+    && player.teamId === TEST_TEAMS.fighters.playerTeamId), "roster identity must remain Fighters-scoped");
+  assert.equal(new Set(roster.map((player) => player.playerId)).size, 15);
+
+  const jobsBefore = await call(`/api/test/jobs${fightersQuery}`, { admin: true });
+  const contestId = String(jobsBefore.payload.contestId || "");
+  assert.ok(contestId, "canonical Fighters contest ID is required");
+  const seed = 20261025;
+  const predictions = buildSyntheticPredictions({ contestId, targetTeam: "fighters", roster, userCount: 10, seed });
+  const suffix = createHash("sha256").update(`${runId}:${contestId}:${seed}`).digest("hex").slice(0, 6);
+  const users = await registerSyntheticUsers(predictions.length, suffix);
+  const cutoff = new Date(startAt.getTime() - V3_TIMING.predictionDeadlineMinutes * 60_000);
+  const beforeCutoff = new Date(cutoff.getTime() - 1);
+  const testWrite = async (user, prediction, logicalNow) => call(`/api/test/prediction-write${fightersQuery}`, {
+    method: "POST", admin: true,
+    body: { sessionCookie: user.session, prediction, logicalNow: logicalNow.toISOString() }
+  });
+
+  let saved = 0;
+  for (const [index, entry] of predictions.entries()) {
+    const result = await testWrite(users[index], entry.prediction, beforeCutoff);
+    assert.equal(result.payload.ok, true, `${entry.label}: normal prediction path should accept before cutoff`);
+    assert.equal(result.payload.status, 200);
+    assert.equal(result.payload.predictionStatus, "submitted");
+    saved += 1;
+  }
+  assert.equal(saved, 10);
+
+  for (const [index, user] of users.entries()) {
+    const readBack = await call(`/api/predictions/current${fightersQuery}`, { sessionCookie: user.session });
+    assert.equal(readBack.payload.prediction?.lineup?.length, 9, `synthetic user ${index + 1}: prediction read-back`);
+  }
+
+  const cutoffResult = await testWrite(users[0], predictions[0].prediction, cutoff);
+  assert.equal(cutoffResult.payload.ok, false);
+  assert.equal(cutoffResult.payload.status, 409);
+  assert.equal(cutoffResult.payload.code, "PREDICTION_DEADLINE_PASSED");
+  const afterCutoff = new Date(cutoff.getTime() + 1);
+  const afterResult = await testWrite(users[0], predictions[0].prediction, afterCutoff);
+  assert.equal(afterResult.payload.ok, false);
+  assert.equal(afterResult.payload.status, 409);
+  assert.equal(afterResult.payload.code, "PREDICTION_DEADLINE_PASSED");
+
+  const closed = await advance("fighters", game.internal_game_id, "closed", cutoff, "prediction_closed");
+  assert.equal(closed.state, "prediction_closed");
+  const control = await call("/simu-npb/control", { method: "POST", body: { lineupState: "available" }, admin: true });
+  assert.equal(control.payload.lineupState, "available");
+  const lineupAt = new Date(startAt.getTime() + 10 * 60_000);
+  const captured = await advance("fighters", game.internal_game_id, "lineup-captured", lineupAt, "lineup_ready");
+  assert.equal(captured.state, "lineup_ready");
+  assert.equal(captured.pipelineDiagnostics?.lineupPersisted, true);
+  const scoring = await call(`/api/test/scenario${fightersQuery}`, {
+    method: "POST", admin: true,
+    body: { scenario: "scored", stageOnly: true, now: lineupAt.toISOString() }
+  });
+  assert.ok(scoring.payload.ok, "formal score stage should complete");
+  const scoringJobs = await call(`/api/test/jobs${fightersQuery}`, { admin: true });
+  assert.ok(scoringJobs.payload.jobs.some((job) => job.job_type === "score" && job.status === "completed"),
+    "formal score job must be completed before ranking");
+  const ranked = await advance("fighters", game.internal_game_id, "ranked", lineupAt, "ranked");
+  assert.equal(ranked.state, "ranked");
+  const published = await advance("fighters", game.internal_game_id, "published", lineupAt, "published");
+  assert.equal(published.publication_status, "published");
+
+  const detailReadbacks = [];
+  for (const user of users) {
+    const detail = await call(`/api/results/games/${encodeURIComponent(game.internal_game_id)}${fightersQuery}`, {
+      sessionCookie: user.session
+    });
+    assert.equal(detail.payload.resultsPublished, true);
+    assert.equal(detail.payload.actualLineup?.length, 9);
+    assert.equal(detail.payload.status, "scored");
+    detailReadbacks.push(Number(detail.payload.score));
+  }
+  assert.equal(detailReadbacks.length, 10);
+  assert.ok(detailReadbacks.every(Number.isFinite));
+  assert.ok(new Set(detailReadbacks).size > 1, "scoring must produce ranking-relevant score variation");
+  const finalJobs = await call(`/api/test/jobs${fightersQuery}`, { admin: true });
+  const required = new Set(["prediction_close", "lineup_fetch", "lineup_finalize", "score", "ranking_rebuild", "publish"]);
+  for (const type of required) {
+    assert.ok(finalJobs.payload.jobs.some((job) => job.job_type === type && job.status === "completed"), `${type}: completed`);
+  }
+  assert.ok(finalJobs.payload.jobs.every((job) => !["claimed", "retry_wait", "failed"].includes(job.status)),
+    "no failed, retry_wait, or leased job may remain");
+
+  const sibling = await call(`/api/test/status${queryFor("hawks")}`);
+  assert.equal(readScenarioState(sibling.payload.game).effectiveState, "scheduled");
+  const siblingJobs = await call(`/api/test/jobs${queryFor("hawks")}`, { admin: true });
+  assert.ok(siblingJobs.payload.jobs.every((job) => job.status === "pending" && Number(job.attempt_count) === 0));
+
+  await logoutSyntheticUsers();
+  for (const user of users) {
+    const auth = await call("/api/auth/me?testTeam=fighters", { sessionCookie: user.session });
+    assert.equal(auth.payload.authenticated, false, "synthetic sessions are revoked after the run");
+  }
+  publishedContests = 1;
+  console.log(`FIGHTERS_REHEARSAL_COMPLETE: ${JSON.stringify({
+    date: "2026-10-25", startAt: game.start_at, opponent: "hawks", providerGameId: game.game_code,
+    internalGameId: game.internal_game_id, contestId, seed, users: 10, saved,
+    cutoffMinus1: beforeCutoff.toISOString(), cutoff: cutoff.toISOString(), cutoffPlus1: afterCutoff.toISOString(),
+    lineupAt: lineupAt.toISOString(), lineupPlayers: 9, scores: detailReadbacks,
+    completedJobs: finalJobs.payload.jobs.filter((job) => job.status === "completed").length,
+    siblingState: "scheduled", sessionsRevoked: users.length
+  })}`);
+}
+
 function simulatorGroupForGame(game) {
   const match = String(game.game_code || "").match(/^g-t-(\d+)$/);
   assert.ok(match, "schedule parser should preserve each simulator game code");
@@ -542,6 +717,8 @@ try {
     await runRosterOnlyCheck();
   } else if (RUN_MODE === "sibling-check") {
     await runSiblingCheck();
+  } else if (RUN_MODE === "fighters-rehearsal") {
+    await runFightersOperationalRehearsal();
   } else {
   // Discover the simulator's actual canonical IDs first. Cleanup is then
   // bounded to those read-back IDs and participant contexts; never send a
@@ -605,11 +782,16 @@ try {
 } catch (error) {
   primaryError = error;
 } finally {
+  try {
+    await logoutSyntheticUsers();
+  } catch (error) {
+    cleanupError = error;
+  }
   if (temporaryAdminCreated) {
     try {
       await cleanupTemporaryAdmin();
     } catch (error) {
-      cleanupError = error;
+      cleanupError = cleanupError ? new AggregateError([cleanupError, error], "Test credentials cleanup failed") : error;
     }
   }
   githubOidcToken = "";
@@ -622,6 +804,10 @@ if (RUN_MODE === "full") {
   assert.equal(publishedContests, 12);
   assert.equal(temporaryUserRetained, true);
   console.log(`Completed ${publishedContests}/12 contests; simulation data and a non-admin ranking identity were retained without a reset.`);
+} else if (RUN_MODE === "fighters-rehearsal") {
+  assert.equal(publishedContests, 1);
+  assert.equal(temporaryUserRetained, false);
+  console.log("Completed the Fighters-only 2026-10-25 15:00 rehearsal; prediction data is retained and all temporary sessions/admin access were revoked.");
 } else {
   assert.equal(publishedContests, 0);
   assert.equal(temporaryUserRetained, false);

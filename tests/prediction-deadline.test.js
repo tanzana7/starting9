@@ -37,7 +37,7 @@ test("Workerは予想のPUTとDELETEの両方でサーバー時刻の締切判�
   const remove = worker.slice(worker.indexOf("async function handleDeleteCurrentPrediction"), worker.indexOf("async function getPredictionRow"));
 
   assert.match(worker, /import \{ getPredictionDeadlineStatus \} from "\.\/prediction-deadline\.js"/);
-  assert.match(put, /createPredictionDeadlineRejection\(metadata, cors\)/);
+  assert.match(put, /const writeNow = getPredictionWriteNow\(env\);[\s\S]*?createPredictionDeadlineRejection\(metadata, cors, writeNow\)/);
   assert.match(remove, /createPredictionDeadlineRejection\(metadata, cors\)/);
   assert.match(worker, /PREDICTION_SCHEDULE_UNAVAILABLE/);
   assert.match(deadlinePolicy, /PREDICTION_DEADLINE_PASSED/);

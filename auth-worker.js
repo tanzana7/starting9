@@ -1,6 +1,7 @@
 import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
 import { PRODUCTION_TEAM, resolveRequestTeamContext, targetTeamForEnvironment, teamContext } from "./backend/target-team.js";
 import { PREDICTION_DEADLINE_MILLISECONDS } from "./prediction-deadline.js";
+import { getPredictionWriteNow } from "./backend/domain/prediction-write-clock.js";
 import {
   getDueFinalLineupAttemptAt,
   getFinalLineupRetryDeadline,
@@ -24770,9 +24771,10 @@ async function handlePutCurrentPrediction(request, env, cors) {
   if (!contest.ok) return jsonResponse({ ok: false, code: contest.code, error: "対象試合と参加チームを確認できません。" }, 400, cors);
   const metadata = { ...reference.metadata, contestId: contest.contestId };
 
-  const deadlineResponse = createPredictionDeadlineRejection(metadata, cors);
+  const writeNow = getPredictionWriteNow(env);
+  const deadlineResponse = createPredictionDeadlineRejection(metadata, cors, writeNow);
   if (deadlineResponse) {
-    const deadline = getResolvedPredictionDeadlineStatus(metadata, new Date());
+    const deadline = getResolvedPredictionDeadlineStatus(metadata, writeNow);
     const deadlineCode = deadline.code === "PREDICTION_SCHEDULE_UNAVAILABLE"
       ? (metadata.resolution?.gameRowFound || metadata.resolution?.scheduleRowFound ? "GAME_ID_RESOLUTION_FAILED" : "GAME_SCHEDULE_NOT_FOUND")
       : deadline.code;
@@ -24802,7 +24804,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, error: "この試合の予想受付は終了しています。" }, 409, cors);
   }
 
-  const now = new Date().toISOString();
+  const now = writeNow.toISOString();
   const id = existing?.id || randomToken(16);
   // An older prediction can already be linked to the same canonical game via
   // a legacy game_id. Keep that compatibility key instead of inserting a
@@ -25606,8 +25608,8 @@ export function getResolvedPredictionDeadlineStatus(resolved, now = new Date()) 
   return getPredictionDeadlineStatus(gameId, now);
 }
 
-function createPredictionDeadlineRejection(resolved, cors) {
-  const deadline = getResolvedPredictionDeadlineStatus(resolved, new Date());
+function createPredictionDeadlineRejection(resolved, cors, now = new Date()) {
+  const deadline = getResolvedPredictionDeadlineStatus(resolved, now);
   if (deadline.ok && !deadline.isClosed) {
     return null;
   }

@@ -2,6 +2,7 @@ import authWorker, { executeGameAutomationV3Job } from "../../auth-worker.js";
 import { planMainWorkflowJobs, runGameAutomationV3 } from "../../game-automation-v3.js";
 import { transitionV3State } from "../../backend/automation-v3/repository.js";
 import { createContestId } from "../../backend/contest-identity.js";
+import { V3_TIMING } from "../../backend/automation-v3/constants.js";
 import { isIsolatedTestEnvironment, validatePublishedScenario } from "./isolation.js";
 import { verifyS9SimuRunToken } from "./github-oidc.js";
 import { assertDistinctTestTeamIdentity, testTeamFixture, TEST_TEAMS, TEST_TEAM_KEYS, TEST_TEAM_GROUPS } from "./teams.js";
@@ -92,7 +93,7 @@ function currentTimes(offsetMinutes) {
   return { now: now.toISOString(), startAt: startAt.toISOString(), deadlineAt: deadlineAt.toISOString(), gameDate };
 }
 
-function createProductEnvironment(env, { automaticOfficialLineup = false } = {}) {
+function createProductEnvironment(env, { automaticOfficialLineup = false, predictionClockNow = null } = {}) {
   if (!isIsolatedTestEnvironment(env)) return env;
   return {
     ...env,
@@ -115,6 +116,7 @@ function createProductEnvironment(env, { automaticOfficialLineup = false } = {})
     NPB_FETCH_DISABLED: "false",
     ENABLE_AUTO_ROSTER_FETCH: "true",
     ENABLE_AUTO_LINEUP_FETCH: "true",
+    ...(predictionClockNow ? { TEST_CLOCK_NOW: predictionClockNow } : {}),
     // Preserve the existing Test site's semi-auto mode outside simulator E2E.
     // That E2E explicitly selects the automatic official-lineup path it tests.
     ...(automaticOfficialLineup ? { ENABLE_SEMI_AUTO_LINEUP: "false" } : {})
@@ -573,6 +575,48 @@ async function callAdminApi(request, env, ctx, pathname, body) {
   }), createProductEnvironment(env), ctx);
 }
 
+async function submitTestPredictionAtLogicalTime(env, ctx, { sessionCookie, prediction, logicalNow, origin }) {
+  const session = String(sessionCookie || "");
+  if (!/^s9_session=[A-Za-z0-9._~-]{16,256}$/.test(session)) {
+    return jsonResponse({ ok: false, code: "TEST_USER_SESSION_REQUIRED" }, 400, origin);
+  }
+  const parsedNow = new Date(logicalNow);
+  if (!Number.isFinite(parsedNow.getTime()) || parsedNow.toISOString() !== logicalNow) {
+    return jsonResponse({ ok: false, code: "TEST_CLOCK_INVALID" }, 400, origin);
+  }
+  const scheduled = await env.AUTH_DB.prepare(`SELECT games.start_time
+    FROM games JOIN game_contests ON game_contests.internal_game_id = games.internal_game_id
+    WHERE games.internal_game_id = ?1 AND game_contests.contest_id = ?2
+      AND game_contests.target_team_key = ?3 LIMIT 1`)
+    .bind(INTERNAL_GAME_ID, CONTEST_ID, targetTeam.key).first();
+  const startAt = Date.parse(String(scheduled?.start_time || ""));
+  if (!Number.isFinite(startAt)) return jsonResponse({ ok: false, code: "TEST_GAME_NOT_FOUND" }, 404, origin);
+  const cutoffAt = startAt - V3_TIMING.predictionDeadlineMinutes * 60_000;
+  if (Math.abs(parsedNow.getTime() - cutoffAt) > 60_000) {
+    return jsonResponse({ ok: false, code: "TEST_CLOCK_OUT_OF_WINDOW" }, 400, origin);
+  }
+
+  // This admin-only bridge injects time into one ordinary prediction PUT.
+  // The production worker never receives this internal env property, and the
+  // public request cannot set it through headers or query parameters.
+  const response = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/predictions/current", {
+    method: "PUT",
+    headers: {
+      Cookie: session,
+      Origin: "https://s9simu.pages.dev",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ internalGameId: INTERNAL_GAME_ID, contestId: CONTEST_ID, prediction })
+  }), createProductEnvironment(env, { predictionClockNow: parsedNow.toISOString() }), ctx);
+  const payload = await response.json().catch(() => null);
+  return jsonResponse({
+    ok: response.ok && payload?.ok === true,
+    status: response.status,
+    code: typeof payload?.code === "string" ? payload.code : null,
+    predictionStatus: typeof payload?.status === "string" ? payload.status : null
+  }, 200, origin);
+}
+
 async function finalizeSyntheticLineup(request, env, ctx) {
   const lineup = teamRoster.slice(0, 9).map((player, index) => ({
     playerId: player.playerId,
@@ -746,12 +790,23 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false, s
       const currentState = String((await env.AUTH_DB.prepare(
         "SELECT state FROM contest_automation_v3_state WHERE contest_id = ?1 LIMIT 1"
       ).bind(CONTEST_ID).first())?.state || "scheduled");
+      const scoringRevision = scenario === "ranked"
+        ? await env.AUTH_DB.prepare(`SELECT status FROM contest_scoring_revisions
+            WHERE internal_game_id = ?1 AND contest_id = ?2 AND is_active = 1
+            ORDER BY created_at DESC LIMIT 1`).bind(INTERNAL_GAME_ID, CONTEST_ID).first()
+        : null;
+      // Test scenario gating may observe a completed canonical score artifact
+      // before its state projection catches up. Permit the ranking request in
+      // that one case; the normal V3 planner and executor still verify the
+      // scoring revision and perform the forward state transition.
+      const rankedFromCompletedScore = scenario === "ranked"
+        && currentState === "lineup_ready" && scoringRevision?.status === "completed";
       const readyStates = scenario === "scored"
         ? new Set(["prediction_closed", "lineup_ready", "scored", "ranked", "published"])
         : scenario === "ranked"
           ? new Set(["scored", "ranked", "published"])
           : new Set(["ranked", "published"]);
-      if (!readyStates.has(currentState) || !existingLineup?.final_lineup_revision_id) {
+      if ((!readyStates.has(currentState) && !rankedFromCompletedScore) || !existingLineup?.final_lineup_revision_id) {
         return jsonResponse({ ok: false, code: "SCENARIO_STAGE_PREREQUISITE", game: await currentScenarioGame(env.AUTH_DB) }, 409);
       }
     } else if (!simulatorMode) {
@@ -946,6 +1001,19 @@ async function handleTestControl(request, env, ctx) {
       .bind(INTERNAL_GAME_ID, CONTEST_ID).all();
     return jsonResponse({ ok: true, internalGameId: INTERNAL_GAME_ID, contestId: CONTEST_ID,
       jobs: Array.isArray(jobs?.results) ? jobs.results : [] }, 200, origin);
+  }
+  if (url.pathname === "/api/test/prediction-write" && request.method === "POST") {
+    if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
+    const input = await request.json().catch(() => null);
+    if (!input || typeof input !== "object" || !input.prediction || typeof input.prediction !== "object") {
+      return jsonResponse({ ok: false, code: "INVALID_TEST_PREDICTION" }, 400, origin);
+    }
+    return submitTestPredictionAtLogicalTime(env, ctx, {
+      sessionCookie: input.sessionCookie,
+      prediction: input.prediction,
+      logicalNow: input.logicalNow,
+      origin
+    });
   }
   if (url.pathname === "/api/test/scenario" && request.method === "POST") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);

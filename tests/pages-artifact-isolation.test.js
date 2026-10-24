@@ -90,5 +90,6 @@ test("Simulated NPB Pages artifact excludes the duplicate Starting9 frontend and
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "index.js")));
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "simu-npb", "source.js")));
   assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "simu-npb", "rosters.js")));
+  assert.ok(fs.existsSync(path.join(generatedPagesProject, "functions", "rehearsal-clock.js")));
   assert.equal(JSON.parse(readArtifact(generatedPagesProject, "wrangler.jsonc")).pages_build_output_dir, "../test-site");
 });

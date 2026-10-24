@@ -47,11 +47,13 @@ export async function createTestSiteMultiTeamFixture({ rosterPlayersByTeam = {} 
       VALUES ('team-test-session', 'team-test-user', ?, ?, '2099-01-01T00:00:00.000Z', ?)`).run(tokenHash, now, now);
     const config = JSON.parse(fs.readFileSync(new URL("../../wrangler.test-auth.jsonc", import.meta.url)));
     const env = { ...config.vars, S9SIMU_ENABLED: "false", AUTH_DB: d1(database), AUDIT_DB: d1(audit) };
-    async function request(team, path, body, method = body === undefined ? "GET" : "POST", { expectedStatus = 200, envOverrides: requestEnvOverrides = {} } = {}) {
+    async function request(team, path, body, method = body === undefined ? "GET" : "POST", {
+      expectedStatus = 200, envOverrides: requestEnvOverrides = {}, sessionCookie = `s9_session=${token}`
+    } = {}) {
       const worker = createTestTeamWorker(team, { rosterPlayers: rosterPlayersByTeam[team] || null });
       const response = await worker.fetch(new Request(`https://starting9-test-auth.internal${path}`, {
         method,
-        headers: { Cookie: `s9_session=${token}`, Origin: "https://s9simu.pages.dev", "Content-Type": "application/json" },
+        headers: { Cookie: sessionCookie, Origin: "https://s9simu.pages.dev", "Content-Type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body)
       }), { ...env, ...requestEnvOverrides }, { waitUntil() {} });
       const result = await response.json();

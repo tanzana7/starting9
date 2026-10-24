@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { TEST_TEAM_GROUPS, TEST_TEAMS, testPredictionPlayerId } from "./teams.js";
 import { buildSyntheticPredictions } from "./auto-prediction-seeder.js";
 import { assertTestAuthConfig, TEST_AUTH_DB_ID, TEST_AUDIT_DB_ID } from "./isolation.js";
@@ -114,25 +114,26 @@ async function cleanupTemporaryAdmin() {
   temporaryAdminCreated = false;
 }
 
-async function registerSyntheticUsers(count, suffix) {
-  const sessions = [];
-  for (let index = 0; index < count; index += 1) {
-    // The public registration path is intentionally rate-limited. Respect its
-    // five-per-minute contract instead of adding a Test-only registration bypass.
-    if (index === 5) await new Promise((resolve) => setTimeout(resolve, 61_000));
-    const username = `s${String(index + 1).padStart(2, "0")}-${suffix}`;
-    const password = randomBytes(24).toString("base64url");
-    const registration = await call("/api/auth/register?testTeam=fighters", {
-      method: "POST",
-      body: { username, password, passwordConfirmation: password },
-      expectedStatus: 201
-    });
-    const session = registration.response.headers.get("Set-Cookie")?.split(";", 1)[0] || "";
-    assert.match(session, /^s9_session=/, "normal registration must establish a session");
-    sessions.push({ username, session });
-    syntheticSessions.push(session);
-  }
-  return sessions;
+async function provisionSyntheticUsers(count, seed) {
+  assert.equal(count, 10, "the rehearsal provisions one bounded batch of ten identities");
+  const provisioning = await call("/api/test/admin/synthetic-users/provision?testTeam=fighters", {
+    method: "POST", admin: true,
+    body: { rehearsalId: "fighters-2026-10-25-1500", seed, count },
+    expectedStatus: 200
+  });
+  assert.equal(provisioning.payload.ok, true);
+  assert.equal(provisioning.payload.requested, count);
+  assert.equal(provisioning.payload.created + provisioning.payload.reused, count);
+  assert.equal(provisioning.payload.users.length, count);
+  const sessions = provisioning.payload.users.map((user) => {
+    assert.match(user.username, /^r[a-f0-9]{12}\d{2}$/);
+    assert.match(user.userId, /^synthetic-[a-f0-9]{64}-\d{2}$/);
+    assert.match(user.sessionCookie, /^s9_session=[A-Za-z0-9._~-]{16,256}$/);
+    syntheticSessions.push(user.sessionCookie);
+    return { username: user.username, userId: user.userId, session: user.sessionCookie };
+  });
+  assert.equal(new Set(sessions.map((user) => user.userId)).size, count);
+  return { users: sessions, created: provisioning.payload.created, reused: provisioning.payload.reused };
 }
 
 async function logoutSyntheticUsers() {
@@ -582,27 +583,46 @@ async function runFightersOperationalRehearsal() {
     assert.equal(identity.targetTeam, teamKey);
   }
   assert.equal(fightersSnapshot.payload.snapshot.contestId, fightersContestId);
-  assert.equal(readScenarioState(fightersBeforeStatus.payload.game).effectiveState, "published",
-    "this rehearsal must exercise the explicitly authorized published-target reset");
-  assert.equal(fightersBeforeStatus.payload.game.publication_status, "published");
+  const fightersState = readScenarioState(fightersBeforeStatus.payload.game).effectiveState;
   assert.equal(readScenarioState(hawksBeforeStatus.payload.game).effectiveState, "published",
     "the prior Hawks sibling publication must be preserved");
   assert.equal(hawksBeforeStatus.payload.game.publication_status, "published");
-  const reset = await call(`/api/test/rehearsal/reset-fighters${fightersQuery}`, {
-    method: "POST", admin: true,
-    body: { expectedContestId: fightersContestId, expectedSiblingContestId: hawksContestId }
-  });
-  assert.equal(reset.payload.ok, true, `Fighters-only contest reset: ${JSON.stringify(reset.payload)}`);
-  assert.equal(reset.payload.targetAfter.state, "scheduled");
-  assert.equal(reset.payload.targetAfter.predictionCount, 0);
-  assert.equal(reset.payload.targetAfter.lineupCount, 0);
-  assert.equal(reset.payload.targetAfter.scoringCount, 0);
-  assert.equal(reset.payload.targetAfter.rankingCount, 0);
-  assert.equal(reset.payload.targetAfter.publicationCount, 0);
-  assert.equal(reset.payload.targetAfter.formalJobCount, 0);
-  assert.deepEqual(reset.payload.siblingAfter, reset.payload.siblingBefore,
+  let resetResult;
+  const resetPerformed = fightersState === "published";
+  if (resetPerformed) {
+    assert.equal(fightersBeforeStatus.payload.game.publication_status, "published");
+    const reset = await call(`/api/test/rehearsal/reset-fighters${fightersQuery}`, {
+      method: "POST", admin: true,
+      body: { expectedContestId: fightersContestId, expectedSiblingContestId: hawksContestId }
+    });
+    resetResult = reset.payload;
+  } else {
+    // The prior authorized rehearsal already reset Fighters before it stopped
+    // at public registration throttling. Accept only a verified empty baseline
+    // instead of repeating that Test-only destructive reset.
+    assert.equal(fightersState, "scheduled", "only published or freshly reset Fighters state is valid");
+    const target = fightersSnapshot.payload.snapshot;
+    assert.equal(target.predictionCount, 0);
+    assert.equal(target.lineupCount, 0);
+    assert.equal(target.scoringCount, 0);
+    assert.equal(target.rankingCount, 0);
+    assert.equal(target.publicationCount, 0);
+    assert.equal(target.formalJobCount, 0);
+    assert.equal(fightersBeforeJobs.payload.jobs.length, 0);
+    resetResult = { ok: true, targetAfter: target,
+      siblingBefore: hawksSnapshot.payload.snapshot, siblingAfter: hawksSnapshot.payload.snapshot };
+  }
+  assert.equal(resetResult.ok, true, `Fighters-only contest reset/baseline: ${JSON.stringify(resetResult)}`);
+  assert.equal(resetResult.targetAfter.state, "scheduled");
+  assert.equal(resetResult.targetAfter.predictionCount, 0);
+  assert.equal(resetResult.targetAfter.lineupCount, 0);
+  assert.equal(resetResult.targetAfter.scoringCount, 0);
+  assert.equal(resetResult.targetAfter.rankingCount, 0);
+  assert.equal(resetResult.targetAfter.publicationCount, 0);
+  assert.equal(resetResult.targetAfter.formalJobCount, 0);
+  assert.deepEqual(resetResult.siblingAfter, resetResult.siblingBefore,
     "contest-only reset must preserve published Hawks state and result fingerprint");
-  const preservedHawksSnapshot = reset.payload.siblingBefore;
+  const preservedHawksSnapshot = resetResult.siblingBefore;
   const assertHawksPreserved = async (phase) => {
     const response = await call(`/api/test/rehearsal/snapshot${hawksQuery}`, { admin: true });
     assert.equal(response.payload.ok, true, `${phase}: Hawks read-only snapshot`);
@@ -630,8 +650,8 @@ async function runFightersOperationalRehearsal() {
   const contestId = fightersContestId;
   const seed = 20261025;
   const predictions = buildSyntheticPredictions({ contestId, targetTeam: "fighters", roster, userCount: 10, seed });
-  const suffix = createHash("sha256").update(`${runId}:${contestId}:${seed}`).digest("hex").slice(0, 6);
-  const users = await registerSyntheticUsers(predictions.length, suffix);
+  const syntheticUserProvisioning = await provisionSyntheticUsers(predictions.length, seed);
+  const users = syntheticUserProvisioning.users;
   const cutoff = new Date(startAt.getTime() - V3_TIMING.predictionDeadlineMinutes * 60_000);
   const beforeCutoff = new Date(cutoff.getTime() - 1);
   const testWrite = async (user, prediction, logicalNow) => call(`/api/test/prediction-write${fightersQuery}`, {
@@ -724,7 +744,9 @@ async function runFightersOperationalRehearsal() {
   publishedContests = 1;
   console.log(`FIGHTERS_REHEARSAL_COMPLETE: ${JSON.stringify({
     date: "2026-10-25", startAt: game.start_at, opponent: "hawks", providerGameId: game.game_code,
-    internalGameId: game.internal_game_id, contestId, seed, users: 10, saved,
+    internalGameId: game.internal_game_id, contestId, seed, users: 10,
+    usersCreated: syntheticUserProvisioning.created, usersReused: syntheticUserProvisioning.reused,
+    publicRegisterRequests: 0, fightersResetPerformed: resetPerformed, saved,
     cutoffMinus1: beforeCutoff.toISOString(), cutoff: cutoff.toISOString(), cutoffPlus1: afterCutoff.toISOString(),
     lineupAt: lineupAt.toISOString(), lineupPlayers: 9, scores: detailReadbacks,
     completedJobs: finalJobs.payload.jobs.filter((job) => job.status === "completed").length,

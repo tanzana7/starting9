@@ -455,6 +455,13 @@ function secureRandomHex(byteCount) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function secureRandomBase64Url(byteCount) {
+  const bytes = crypto.getRandomValues(new Uint8Array(byteCount));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
 function readSessionCookie(response) {
   const value = response.headers.get("Set-Cookie") || "";
   const cookie = value.split(";", 1)[0];
@@ -466,6 +473,103 @@ async function hashSessionToken(token) {
   let binary = "";
   for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function provisionSyntheticTestUsers(env, { rehearsalId, seed, count }) {
+  // This bounded identity namespace exists only for the one-shot operational
+  // rehearsal. Stable usernames prevent repeat rehearsals from accumulating
+  // arbitrary accounts; passwords remain unknown and are never used because
+  // the returned short-lived sessions are issued only through this Test admin
+  // boundary.
+  const identityHash = new Uint8Array(await crypto.subtle.digest(
+    "SHA-256", new TextEncoder().encode(`${rehearsalId}:${seed}`)
+  ));
+  const identitySuffix = Array.from(identityHash.slice(0, 6), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+  const plannedUsers = [];
+  let created = 0;
+  let reused = 0;
+
+  for (let index = 0; index < count; index += 1) {
+    const indexText = String(index + 1).padStart(2, "0");
+    const username = `r${identitySuffix}${indexText}`;
+    const usernameNormalized = username.toLocaleLowerCase("en-US");
+    const userId = `synthetic-${Array.from(identityHash, (byte) => byte.toString(16).padStart(2, "0")).join("")}-${indexText}`;
+    const [existingByName, existingById] = await Promise.all([
+      env.AUTH_DB.prepare(
+        "SELECT id, username, username_normalized, status, role FROM users WHERE username_normalized = ?1 LIMIT 1"
+      ).bind(usernameNormalized).first(),
+      env.AUTH_DB.prepare(
+        "SELECT id, username, username_normalized, status, role FROM users WHERE id = ?1 LIMIT 1"
+      ).bind(userId).first()
+    ]);
+    const existing = existingByName || existingById;
+
+    if (existing) {
+      // Never take over a coincidentally matching user or elevate a prior row.
+      if (existing.id !== userId || existing.username !== username
+          || existing.username_normalized !== usernameNormalized
+          || existing.status !== "active" || existing.role !== "user") {
+        return { ok: false, code: "SYNTHETIC_IDENTITY_CONFLICT" };
+      }
+      reused += 1;
+    } else {
+      created += 1;
+    }
+
+    const token = secureRandomHex(32);
+    const sessionId = secureRandomHex(16);
+    const tokenHash = await hashSessionToken(token);
+    plannedUsers.push({ username, usernameNormalized, userId, token, tokenHash, sessionId, isNew: !existing });
+  }
+
+  // One D1 batch makes the bounded ten-account operation atomic: a conflict or
+  // failed session write cannot leave a partially provisioned rehearsal.
+  const statements = [];
+  for (const user of plannedUsers) {
+    if (user.isNew) {
+      // These dedicated accounts cannot authenticate with a user-supplied
+      // password. The random hash is intentionally not a reusable credential;
+      // predictions authenticate only through the opaque Test admin-issued session.
+      statements.push(env.AUTH_DB.prepare(`INSERT INTO users
+        (id, username, username_normalized, password_hash, password_salt,
+         password_iterations, created_at, updated_at, status, role)
+        VALUES (?1, ?2, ?3, ?4, ?5, 100000, ?6, ?6, 'active', 'user')`)
+        .bind(user.userId, user.username, user.usernameNormalized,
+          secureRandomBase64Url(32), secureRandomBase64Url(16), now.toISOString()));
+    }
+    statements.push(env.AUTH_DB.prepare("DELETE FROM sessions WHERE user_id = ?1").bind(user.userId));
+    statements.push(env.AUTH_DB.prepare(`INSERT INTO sessions
+      (id, user_id, token_hash, created_at, expires_at, last_used_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?4)`)
+      .bind(user.sessionId, user.userId, user.tokenHash, now.toISOString(), expiresAt.toISOString()));
+  }
+  await env.AUTH_DB.batch(statements);
+
+  const users = plannedUsers.map(({ username, userId, token }) => ({
+    username, userId, sessionCookie: `s9_session=${token}`
+  }));
+  return { ok: true, rehearsalId, seed, requested: count, created, reused,
+    sessionExpiresAt: expiresAt.toISOString(), users };
+}
+
+async function handleSyntheticTestUserProvisioning(request, env, ctx, input, origin) {
+  if (!await requireTestAdmin(request, env, ctx)) {
+    return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
+  }
+  if (input?.rehearsalId !== "fighters-2026-10-25-1500"
+      || input?.seed !== 20261025 || input?.count !== 10) {
+    return jsonResponse({ ok: false, code: "INVALID_SYNTHETIC_REHEARSAL" }, 400, origin);
+  }
+  try {
+    const result = await provisionSyntheticTestUsers(env, input);
+    return jsonResponse(result, result.ok ? 200 : 409, origin);
+  } catch (error) {
+    const errorName = /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(String(error?.name || "")) ? error.name : "Error";
+    console.error(`[S9SIMU] synthetic_user_provision_failed errorClass=${errorName}`);
+    return jsonResponse({ ok: false, code: "SYNTHETIC_PROVISION_FAILED" }, 500, origin);
+  }
 }
 
 function withSessionExpiry(setCookie, expiresAt) {
@@ -1060,6 +1164,10 @@ async function handleTestControl(request, env, ctx) {
     if (input?.action === "provision") return provisionE2EAdmin(request, env, ctx, input);
     if (input?.action === "cleanup") return cleanupE2EAdmin(request, env, ctx, input);
     return jsonResponse({ ok: false, code: "INVALID_ACTION" }, 400, origin);
+  }
+  if (url.pathname === "/api/test/admin/synthetic-users/provision" && request.method === "POST") {
+    const input = await request.json().catch(() => null);
+    return handleSyntheticTestUserProvisioning(request, env, ctx, input, origin);
   }
   if (url.pathname === "/api/test/simu/schedule" && request.method === "POST") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);

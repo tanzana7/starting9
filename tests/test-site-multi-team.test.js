@@ -138,6 +138,84 @@ test("all twelve isolated teams complete contest E2E across six dual-contest phy
   } finally { f.close(); }
 });
 
+test("Fighters rehearsal reset preserves a published same-game Hawks contest and refuses a published target", async () => {
+  const f = await createTestSiteMultiTeamFixture();
+  const group = TEST_TEAM_GROUPS[3];
+  const internalGameId = group.internalGameId;
+  const query = (team) => `?internalGameId=${encodeURIComponent(internalGameId)}&testTeam=${team}&simuNpb=1`;
+  try {
+    await f.request(group.homeKey, "/api/test/reset", {});
+    const now = new Date().toISOString();
+    f.database.prepare(`UPDATE games SET game_date='2026-10-25', start_time='2026-10-25T15:00:00+09:00'
+      WHERE internal_game_id=?`).run(internalGameId);
+    f.database.prepare(`INSERT INTO game_identifiers
+      (internal_game_id, provider, identifier_type, identifier_value, is_primary, created_at, updated_at)
+      VALUES (?, 'npb', 'npb_game_code', 'g-t-4', 1, ?, ?)`).run(internalGameId, now, now);
+    const rehearsalGame = f.database.prepare(`SELECT game_date, start_time, npb_game_code,
+      (SELECT identifier_value FROM game_identifiers WHERE internal_game_id=?
+        AND provider='npb' AND identifier_type='npb_game_code' ORDER BY updated_at DESC, id DESC LIMIT 1) AS provider_game_id
+      FROM games WHERE internal_game_id=?`).get(internalGameId, internalGameId);
+    assert.equal(rehearsalGame.game_date, "2026-10-25");
+    assert.equal(Date.parse(rehearsalGame.start_time), Date.parse("2026-10-25T06:00:00.000Z"));
+    assert.equal(rehearsalGame.provider_game_id, "g-t-4");
+
+    // Submit both contests before advancing the shared physical-game clock.
+    await prepareTeamPrediction(f, "hawks", group);
+    await prepareTeamPrediction(f, "fighters", group);
+    await exerciseTeam(f, "hawks", group);
+    // The generic local scenario helper shifts game time to its post-game
+    // boundary; restore only this isolated physical fixture's rehearsal slot.
+    f.database.prepare(`UPDATE games SET game_date='2026-10-25', start_time='2026-10-25T15:00:00+09:00'
+      WHERE internal_game_id=?`).run(internalGameId);
+    const hawksBefore = await f.request("hawks", `/api/test/rehearsal/snapshot${query("hawks")}`);
+    assert.equal(hawksBefore.snapshot.state, "published");
+    assert.equal(hawksBefore.snapshot.publicationStatus, "published");
+    assert.equal(hawksBefore.snapshot.publicationCount, 1);
+
+    const fightersJobs = await f.request("fighters", `/api/test/jobs${query("fighters")}`);
+    const hawksJobs = await f.request("hawks", `/api/test/jobs${query("hawks")}`);
+    const reset = await f.request("fighters", `/api/test/rehearsal/reset-fighters${query("fighters")}`, {
+      expectedContestId: fightersJobs.contestId,
+      expectedSiblingContestId: hawksJobs.contestId
+    });
+    assert.equal(reset.ok, true, JSON.stringify(reset));
+    assert.equal(reset.targetAfter.state, "scheduled");
+    assert.equal(reset.targetAfter.predictionCount, 0);
+    assert.equal(reset.targetAfter.lineupCount, 0);
+    assert.equal(reset.targetAfter.scoringCount, 0);
+    assert.equal(reset.targetAfter.rankingCount, 0);
+    assert.equal(reset.targetAfter.publicationCount, 0);
+    assert.equal(reset.targetAfter.formalJobCount, 0);
+    assert.deepEqual(reset.siblingAfter, hawksBefore.snapshot);
+    const resetFighters = await f.request("fighters", `/api/test/status${query("fighters")}`);
+    assert.equal(resetFighters.game.state, "scheduled");
+    const resetPrediction = await f.request("fighters", `/api/predictions/current${query("fighters")}`);
+    assert.equal(Boolean(resetPrediction.prediction), false);
+    const hawksAfterReset = await f.request("hawks", `/api/test/rehearsal/snapshot${query("hawks")}`);
+    assert.deepEqual(hawksAfterReset.snapshot, hawksBefore.snapshot);
+
+    // Fixture a published target to prove the endpoint is fail-closed without
+    // relying on a second full pipeline after the shared game clock advanced.
+    f.database.prepare(`UPDATE contest_automation_v3_state SET state='published', published_at=?, updated_at=?
+      WHERE contest_id=?`).run(now, now, fightersJobs.contestId);
+    f.database.prepare(`INSERT INTO contest_ranking_games
+      (contest_id, internal_game_id, game_id, game_status, created_at, updated_at,
+       publication_status, published_at)
+      VALUES (?, ?, ?, 'scored', ?, ?, 'published', ?)`)
+      .run(fightersJobs.contestId, internalGameId, internalGameId, now, now, now);
+    const publishedFightersBefore = await f.request("fighters", `/api/test/rehearsal/snapshot${query("fighters")}`);
+    const refused = await f.request("fighters", `/api/test/rehearsal/reset-fighters${query("fighters")}`, {
+      expectedContestId: fightersJobs.contestId,
+      expectedSiblingContestId: hawksJobs.contestId
+    }, "POST", { expectedStatus: 409 });
+    assert.equal(refused.code, "REHEARSAL_TARGET_ALREADY_PUBLISHED");
+    const publishedFightersAfter = await f.request("fighters", `/api/test/rehearsal/snapshot${query("fighters")}`);
+    assert.deepEqual(publishedFightersAfter.snapshot, publishedFightersBefore.snapshot);
+    const finalHawks = await f.request("hawks", `/api/test/rehearsal/snapshot${query("hawks")}`);
+    assert.deepEqual(finalHawks.snapshot, hawksBefore.snapshot);
+  } finally { f.close(); }
+});
+
 test("ranking failure enters retry_wait without blocking the same-game sibling contest", async () => {
   const f = await createTestSiteMultiTeamFixture();
   const group = TEST_TEAM_GROUPS[0];

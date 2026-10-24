@@ -560,22 +560,54 @@ async function runFightersOperationalRehearsal() {
   assert.equal(startAt.toISOString(), "2026-10-25T06:00:00.000Z", "fixture must be 2026-10-25 15:00 JST");
   const queryFor = (teamKey) => `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
 
-  // Preserve earlier Test results. Never reset a game in this one-shot mode.
-  for (const teamKey of [group.homeKey, group.awayKey]) {
-    const query = queryFor(teamKey);
-    const [jobs, status, prediction] = await Promise.all([
-      call(`/api/test/jobs${query}`, { admin: true }),
-      call(`/api/test/status${query}`),
-      call(`/api/predictions/current${query}`, { admin: true })
-    ]);
-    const state = readScenarioState(status.payload.game);
-    assert.equal(state.effectiveState, "scheduled", `${teamKey}: game must be at its fresh scheduled baseline`);
-    assert.equal(Boolean(prediction.payload?.prediction), false, `${teamKey}: no prior prediction may be overwritten`);
-    assert.ok((jobs.payload.jobs || []).every((job) => job.status === "pending" && Number(job.attempt_count) === 0),
-      `${teamKey}: only untouched scheduled formal jobs may exist before rehearsal`);
-  }
-
   const fightersQuery = queryFor("fighters");
+  const hawksQuery = queryFor("hawks");
+  const [fightersBeforeJobs, fightersBeforeStatus, hawksBeforeJobs, hawksBeforeStatus] = await Promise.all([
+    call(`/api/test/jobs${fightersQuery}`, { admin: true }),
+    call(`/api/test/status${fightersQuery}`),
+    call(`/api/test/jobs${hawksQuery}`, { admin: true }),
+    call(`/api/test/status${hawksQuery}`)
+  ]);
+  const fightersContestId = String(fightersBeforeJobs.payload.contestId || "");
+  const hawksContestId = String(hawksBeforeJobs.payload.contestId || "");
+  assert.ok(fightersContestId && hawksContestId && fightersContestId !== hawksContestId);
+  assert.notEqual(readScenarioState(fightersBeforeStatus.payload.game).effectiveState, "published",
+    "rehearsal must never erase an already-published Fighters target");
+  assert.equal(readScenarioState(hawksBeforeStatus.payload.game).effectiveState, "published",
+    "the prior Hawks sibling publication must be preserved");
+  assert.equal(hawksBeforeStatus.payload.game.publication_status, "published");
+  const reset = await call(`/api/test/rehearsal/reset-fighters${fightersQuery}`, {
+    method: "POST", admin: true,
+    body: { expectedContestId: fightersContestId, expectedSiblingContestId: hawksContestId }
+  });
+  assert.equal(reset.payload.ok, true, `Fighters-only contest reset: ${JSON.stringify(reset.payload)}`);
+  assert.equal(reset.payload.targetAfter.state, "scheduled");
+  assert.equal(reset.payload.targetAfter.predictionCount, 0);
+  assert.equal(reset.payload.targetAfter.lineupCount, 0);
+  assert.equal(reset.payload.targetAfter.scoringCount, 0);
+  assert.equal(reset.payload.targetAfter.rankingCount, 0);
+  assert.equal(reset.payload.targetAfter.publicationCount, 0);
+  assert.equal(reset.payload.targetAfter.formalJobCount, 0);
+  assert.deepEqual(reset.payload.siblingAfter, reset.payload.siblingBefore,
+    "contest-only reset must preserve published Hawks state and result fingerprint");
+  const preservedHawksSnapshot = reset.payload.siblingBefore;
+  const assertHawksPreserved = async (phase) => {
+    const response = await call(`/api/test/rehearsal/snapshot${hawksQuery}`, { admin: true });
+    assert.equal(response.payload.ok, true, `${phase}: Hawks read-only snapshot`);
+    assert.deepEqual(response.payload.snapshot, preservedHawksSnapshot,
+      `${phase}: published Hawks contest must remain byte-equivalent at the scoped data boundary`);
+  };
+  const [fightersAfterJobs, fightersAfterPrediction, baselineStatus] = await Promise.all([
+    call(`/api/test/jobs${fightersQuery}`, { admin: true }),
+    call(`/api/predictions/current${fightersQuery}`, { admin: true }),
+    call(`/api/test/status${fightersQuery}`)
+  ]);
+  assert.equal(readScenarioState(baselineStatus.payload.game).effectiveState, "scheduled");
+  assert.equal(Boolean(fightersAfterPrediction.payload?.prediction), false,
+    "Fighters predictions must be absent after the scoped reset");
+  assert.equal(fightersAfterJobs.payload.jobs.length, 0, "Fighters formal jobs must be absent after reset");
+  await assertHawksPreserved("after-reset");
+
   const rosterResponse = await call(`/api/game-day-roster${fightersQuery}`, { admin: true });
   const roster = rosterResponse.payload.players || [];
   assert.equal(roster.length, 15, "Fighters roster must contain 15 source players");
@@ -583,9 +615,7 @@ async function runFightersOperationalRehearsal() {
     && player.teamId === TEST_TEAMS.fighters.playerTeamId), "roster identity must remain Fighters-scoped");
   assert.equal(new Set(roster.map((player) => player.playerId)).size, 15);
 
-  const jobsBefore = await call(`/api/test/jobs${fightersQuery}`, { admin: true });
-  const contestId = String(jobsBefore.payload.contestId || "");
-  assert.ok(contestId, "canonical Fighters contest ID is required");
+  const contestId = fightersContestId;
   const seed = 20261025;
   const predictions = buildSyntheticPredictions({ contestId, targetTeam: "fighters", roster, userCount: 10, seed });
   const suffix = createHash("sha256").update(`${runId}:${contestId}:${seed}`).digest("hex").slice(0, 6);
@@ -606,6 +636,7 @@ async function runFightersOperationalRehearsal() {
     saved += 1;
   }
   assert.equal(saved, 10);
+  await assertHawksPreserved("after-prediction-seeding");
 
   for (const [index, user] of users.entries()) {
     const readBack = await call(`/api/predictions/current${fightersQuery}`, { sessionCookie: user.session });
@@ -624,24 +655,29 @@ async function runFightersOperationalRehearsal() {
 
   const closed = await advance("fighters", game.internal_game_id, "closed", cutoff, "prediction_closed");
   assert.equal(closed.state, "prediction_closed");
+  await assertHawksPreserved("after-prediction-close");
   const control = await call("/simu-npb/control", { method: "POST", body: { lineupState: "available" }, admin: true });
   assert.equal(control.payload.lineupState, "available");
   const lineupAt = new Date(startAt.getTime() + 10 * 60_000);
   const captured = await advance("fighters", game.internal_game_id, "lineup-captured", lineupAt, "lineup_ready");
   assert.equal(captured.state, "lineup_ready");
   assert.equal(captured.pipelineDiagnostics?.lineupPersisted, true);
+  await assertHawksPreserved("after-lineup-capture");
   const scoring = await call(`/api/test/scenario${fightersQuery}`, {
     method: "POST", admin: true,
     body: { scenario: "scored", stageOnly: true, now: lineupAt.toISOString() }
   });
   assert.ok(scoring.payload.ok, "formal score stage should complete");
+  await assertHawksPreserved("after-scoring");
   const scoringJobs = await call(`/api/test/jobs${fightersQuery}`, { admin: true });
   assert.ok(scoringJobs.payload.jobs.some((job) => job.job_type === "score" && job.status === "completed"),
     "formal score job must be completed before ranking");
   const ranked = await advance("fighters", game.internal_game_id, "ranked", lineupAt, "ranked");
   assert.equal(ranked.state, "ranked");
+  await assertHawksPreserved("after-ranking");
   const published = await advance("fighters", game.internal_game_id, "published", lineupAt, "published");
   assert.equal(published.publication_status, "published");
+  await assertHawksPreserved("after-publication");
 
   const detailReadbacks = [];
   for (const user of users) {
@@ -664,10 +700,9 @@ async function runFightersOperationalRehearsal() {
   assert.ok(finalJobs.payload.jobs.every((job) => !["claimed", "retry_wait", "failed"].includes(job.status)),
     "no failed, retry_wait, or leased job may remain");
 
-  const sibling = await call(`/api/test/status${queryFor("hawks")}`);
-  assert.equal(readScenarioState(sibling.payload.game).effectiveState, "scheduled");
-  const siblingJobs = await call(`/api/test/jobs${queryFor("hawks")}`, { admin: true });
-  assert.ok(siblingJobs.payload.jobs.every((job) => job.status === "pending" && Number(job.attempt_count) === 0));
+  const sibling = await call(`/api/test/status${hawksQuery}`);
+  assert.equal(readScenarioState(sibling.payload.game).effectiveState, "published");
+  await assertHawksPreserved("final-readback");
 
   await logoutSyntheticUsers();
   for (const user of users) {
@@ -681,7 +716,8 @@ async function runFightersOperationalRehearsal() {
     cutoffMinus1: beforeCutoff.toISOString(), cutoff: cutoff.toISOString(), cutoffPlus1: afterCutoff.toISOString(),
     lineupAt: lineupAt.toISOString(), lineupPlayers: 9, scores: detailReadbacks,
     completedJobs: finalJobs.payload.jobs.filter((job) => job.status === "completed").length,
-    siblingState: "scheduled", sessionsRevoked: users.length
+    siblingState: "published", siblingFingerprint: preservedHawksSnapshot.fingerprint,
+    sessionsRevoked: users.length
   })}`);
 }
 

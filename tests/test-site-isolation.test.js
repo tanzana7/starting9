@@ -71,11 +71,14 @@ test("production Pages proxy keeps its exact origin and rejects test-worker cros
   assert.equal(resolveAuthWorkerOrigin({ SITE_ENVIRONMENT: "test", STARTING9_AUTH_ORIGIN: prodConfig.name }), null);
 });
 
-test("scenario worker uses real wall-clock-relative fixtures, not a global Date override", () => {
+test("scenario worker uses real wall-clock-relative fixtures, not a global Date override", async () => {
   const source = fs.readFileSync(path.join(ROOT, "tooling/test-site/worker.js"), "utf8");
   assert.match(source, /new Date\(\)/);
   assert.doesNotMatch(source, /Date\.now\s*=|globalThis\.Date\s*=|Date\s*=\s*class/);
-  assert.equal(readJson("wrangler.test-auth.jsonc").triggers?.crons?.length || 0, 0);
+  const { TEST_CRON_TRIGGERS } = await import("../tooling/test-site/isolation.js");
+  assert.deepEqual(readJson("wrangler.test-auth.jsonc").triggers?.crons, TEST_CRON_TRIGGERS);
+  assert.equal(readJson("wrangler.test-auth.jsonc").vars.ENABLE_AUTO_LINEUP_FETCH, "false");
+  assert.equal(readJson("wrangler.test-auth.jsonc").vars.ENABLE_SEMI_AUTO_LINEUP, "true");
 });
 
 test("closed scenario advances through the formal planner to prediction_closed", () => {

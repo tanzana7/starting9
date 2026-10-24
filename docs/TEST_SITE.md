@@ -9,7 +9,7 @@
 - Pages project: `s9simu`; all remote Pages commands must use the explicit `starting9-target` Wrangler profile (Pages config does not support an `account_id` field).
 - Auth Worker: `starting9-test-auth`, entrypoint `tooling/test-site/worker.js`.
 - Databases: `starting9-test-auth-db` and `starting9-test-audit-db`.
-- The test Worker has no Cron triggers and no service bindings. External NPB fetching is disabled.
+- The Test Worker has no service bindings and keeps external NPB fetching disabled in its base configuration. The 2026-10-25 unattended Fighters rehearsal temporarily enables the five Production-equivalent Cron schedules in `wrangler.test-auth.jsonc`; its runtime identity guard allows only the isolated Test D1s, and the synthetic seeder is further limited to the rehearsal's exact one-hour window.
 - The production site continues to use `starting9-app`, `starting9-auth`, and the production databases. Do not use production deployment configs for this site.
 
 `tooling/test-site/isolation.js` and the config tests fail closed if test identity is missing or a production database ID is bound. The Pages API proxy chooses an exact Auth Worker origin from the explicit `SITE_ENVIRONMENT`; it never accepts an arbitrary URL.
@@ -43,5 +43,7 @@ The fixture contains six deterministic physical games, pairing all twelve canoni
 ## Build, validate, and deploy
 
 Build static assets with `node tooling/test-site/build-pages.mjs`. The public artifact contains only the legacy-route redirects, Simulated NPB route manifest, and simulator styles/editor asset; its Pages Functions and isolated APIs are assembled separately under `dist/test-site-project`. Starting9 app files and private scenario-control UI sources are not published. Validate the test Worker with `npx wrangler deploy --dry-run --config wrangler.test-auth.jsonc --profile starting9-target`; deploy only with that exact config and profile. The build creates the Pages project root at `dist/test-site-project`, with its config and Pages Function proxy, and public files at `dist/test-site`. Run Pages commands with `--cwd dist/test-site-project --profile starting9-target`. Never omit the profile, and do not run `tooling/production-deploy.cjs` for test resources.
+
+After the 2026-10-25 final observer checkpoint has been collected, remove the temporary `triggers.crons` block from `wrangler.test-auth.jsonc`, validate with `npm run check`, then deploy that Test-only config with `npx wrangler deploy --config wrangler.test-auth.jsonc --profile starting9-target` to detach the schedules. Do not perform this cleanup before the final observer result. This cleanup must never use a Production config or profile.
 
 Apply the repository's existing Auth and Audit migrations only to the two test D1s, using the explicit test Worker config and `starting9-target` profile. Do not run source-account commands or production configs during setup.

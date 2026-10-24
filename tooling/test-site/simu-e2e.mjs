@@ -659,7 +659,8 @@ async function runFightersOperationalRehearsal({ prepareOnly = false } = {}) {
     assert.equal(readScenarioState(baselineStatus.payload.game).effectiveState, "scheduled");
     assert.ok([null, "pending"].includes(baselineStatus.payload.game.publication_status),
       "an unpublished baseline may have no persisted status or an explicit pending status");
-    assert.equal(baselinePrediction.payload?.prediction, undefined);
+    assert.ok([null, undefined].includes(baselinePrediction.payload?.prediction),
+      "an empty prediction baseline may be represented as null or omitted");
     assert.equal(baseline.predictionCount, 0);
     assert.equal(baseline.lineupCount, 0);
     assert.equal(baseline.scoringCount, 0);

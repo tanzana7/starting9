@@ -69,7 +69,7 @@ test("公開entry scriptのcache busterを更新し、既存moduleの読み込�
   assert.match(html, new RegExp(`style\\.css\\?v=${styleCacheBuster}`));
   for (const match of html.matchAll(/frontend\/public\/[^\"']+\.js\?v=([^\"']+)/g)) {
     const expectedCacheBuster = match[0].startsWith("frontend/public/render-results.js?")
-      ? "public-cancelled-result-date-display-1-public-best-nine-count-hidden-1"
+      ? "public-cancelled-result-date-display-1-public-best-nine-count-hidden-1-v4-final-cleanup-1"
       : match[0].startsWith("frontend/public/analytics.js?")
         ? "cf-web-analytics-1"
       : match[0].startsWith("frontend/public/app-coordinator.js?")

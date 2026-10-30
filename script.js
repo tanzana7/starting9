@@ -2823,7 +2823,11 @@ function buildDailyBestNineApiUrl(gameId = "") {
   const reference = String(gameId || "").trim();
   if (!baseUrl || !reference) return "";
   const url = new URL(`${baseUrl}/api/results/daily-best-nine`, window.location.href);
-  if (state.resultHistory.result?.internalGameId) {
+  // Best Nine is a public property of the latest globally published game.
+  // The personal result selection must never change the public target or its
+  // cache key for another user.
+  const globalGame = state.previousResultGame?.game;
+  if (String(globalGame?.internalGameId || "").trim() === reference) {
     url.searchParams.set("internalGameId", reference);
   } else {
     url.searchParams.set("gameId", reference);
@@ -2832,8 +2836,8 @@ function buildDailyBestNineApiUrl(gameId = "") {
 }
 
 function getDailyBestNineGameId() {
-  const result = state.resultHistory.result;
-  return String(result?.internalGameId || result?.gameId || state.resultHistory.selectedGameId || "").trim();
+  const globalGame = state.previousResultGame?.game || getFastPreviousResultGame();
+  return String(globalGame?.internalGameId || globalGame?.gameId || "").trim();
 }
 
 function resetDailyBestNine(status = "idle") {
@@ -3273,7 +3277,6 @@ function resolveResultHistorySelection() {
 
   history.result = null;
   clearStoredPublicResult();
-  resetDailyBestNine("unpublished");
   syncPublicAppState();
   renderScoreResult();
 }
@@ -3310,7 +3313,6 @@ async function refreshResultHistory({ force = false } = {}) {
     beginPublicRequest("resultDetail", { abort: true });
     clearStoredPublicResult();
     state.resultHistory = { isLoading: false, isDetailLoading: false, isReady: true, games: [], detailCache: Object.create(null), selectedGameId: "", displayMode: "previous", isExpanded: false, result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
-    resetDailyBestNine();
     syncPublicAppState();
     renderScoreResult();
     renderResultHistory();
@@ -3401,11 +3403,7 @@ async function loadResultHistoryGame(gameId, { manual = true, fastPrevious = fal
     state.resultHistory.isDetailLoading = false;
     state.resultHistory.detailError = "";
     state.resultHistory.message = "";
-    if (getPublicResultAvailability(cached)) {
-      resetDailyBestNine("unpublished");
-    } else {
-      void fetchDailyBestNine({ gameId: cached.internalGameId || gameId, force: false });
-    }
+    void fetchDailyBestNine({ force: false });
     syncPublicAppState();
     renderScoreResult();
     renderResultHistory();
@@ -3450,14 +3448,12 @@ async function loadResultHistoryGame(gameId, { manual = true, fastPrevious = fal
       state.resultHistory.detailCache[gameId] = state.resultHistory.result;
       state.result = state.resultHistory.result;
       state.resultHistory.message = "";
-      resetDailyBestNine("unpublished");
       renderScoreResult();
       renderResultHistory();
       return;
     }
     if (!payload.resultsPublished) {
       state.result = null;
-      resetDailyBestNine("unpublished");
       state.resultHistory.message = "この試合の結果はまだ公開されていません。";
       renderResultHistory();
       return;
@@ -3480,20 +3476,19 @@ async function loadResultHistoryGame(gameId, { manual = true, fastPrevious = fal
       state.resultHistory.result = nextResult;
       state.result = nextResult;
       state.resultHistory.message = "";
-      void fetchDailyBestNine({ gameId: payload.internalGameId || payload.gameId || gameId, force: false });
+      void fetchDailyBestNine({ force: false });
       renderScoreResult();
       return nextResult;
     }
     state.resultHistory.result = nextResult;
     state.result = nextResult;
     state.resultHistory.message = "";
-    void fetchDailyBestNine({ gameId: payload.internalGameId || payload.gameId || gameId, force: true });
+    void fetchDailyBestNine({ force: true });
     renderScoreResult();
   } catch (error) {
     if (!isCurrentPublicRequest("resultDetail", request.id)) return;
     state.result = null;
     state.resultHistory.result = null;
-    resetDailyBestNine("error");
     state.resultHistory.detailError = "結果を読み込めませんでした。時間をおいて再度お試しください。";
     state.resultHistory.message = "この試合の結果を取得できませんでした。";
     console.error("過去の試合結果の読み込みに失敗しました", error.message);

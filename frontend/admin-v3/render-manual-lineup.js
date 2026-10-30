@@ -110,8 +110,36 @@
         if (playerNameKey) entry = entries.find((candidate) => normalizePlayerName(candidate?.playerName || candidate?.name || candidate?.displayName) === playerNameKey) || null;
       }
       if (entry) {
-        const status = String(entry.status || "active").trim().toLowerCase();
-        return { inRoster: true, active: status === "active", status: status || "inactive" };
+        const mode = String(entry.mode || "").trim().toLowerCase();
+        const status = String(entry.status || "").trim().toLowerCase();
+        if (mode === "auto") {
+          const effectiveActive = [
+            entry.effectiveActive,
+            entry.manualRosterEffectiveActive,
+            entry.effectiveRosterActive,
+            player?.manualRosterEffectiveActive,
+            player?.effectiveRosterActive,
+            player?.manualRosterActive
+          ].find((value) => typeof value === "boolean");
+          if (typeof effectiveActive === "boolean") {
+            return { inRoster: true, active: effectiveActive, status: effectiveActive ? "active" : "inactive" };
+          }
+          const fallbackStatus = String(
+            player?.effectiveRosterStatus
+              || player?.manualRosterStatus
+              || entry.status
+              || ""
+          ).trim().toLowerCase();
+          if (fallbackStatus === "active" || fallbackStatus === "inactive") {
+            return { inRoster: true, active: fallbackStatus === "active", status: fallbackStatus };
+          }
+          // AUTO without an effective roster signal must not promote a player
+          // into the active group. Preserve the existing conservative fallback
+          // until an effective roster value is available.
+          return { inRoster: true, active: false, status: "inactive" };
+        }
+        const effectiveStatus = mode || status || "active";
+        return { inRoster: true, active: effectiveStatus === "active", status: effectiveStatus };
       }
       if (hasManualRosterData(manualRoster)) return { inRoster: false, active: false, status: "outside" };
       const catalogStatus = String(player?.manualRosterStatus || "").trim().toLowerCase();

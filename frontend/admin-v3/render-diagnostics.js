@@ -63,7 +63,7 @@
       const gameState = String(game?.state?.state || "scheduled");
       const canonical = game?.canonicalArtifacts?.aggregate || null;
       if (options.semiAuto && step === "roster") {
-        return game?.rosterDiagnostics?.rosterSnapshotExists ? "ok" : "waiting";
+        return "waiting";
       }
       if (options.semiAuto && step === "lineup") {
         if (canonical) return canonical.lineupReady ? "ok" : canonical.needsAttention ? "attention" : "waiting";
@@ -100,6 +100,18 @@
       return "waiting";
     }
 
+    function isV4DisabledFetchJob(job) {
+      return ["roster_fetch", "lineup_fetch", "provisional_lineup_fetch", "final_lineup_fetch"].includes(String(job?.job_type || ""));
+    }
+
+    function v4ManualStageDetail(game, stage, canonical, gameState) {
+      if (stage === "roster") return { detail: "手動運用 / code: V4_MANUAL_ROSTER", code: "V4_MANUAL_ROSTER" };
+      const finalized = canonical?.lineupReady === true || ["lineup_ready", "scored", "ranked", "published"].includes(gameState);
+      return finalized
+        ? { detail: "正式スタメン確定済み / code: V4_MANUAL_LINEUP_FINAL", code: "V4_MANUAL_LINEUP_FINAL" }
+        : { detail: "手動確定待ち（自動取得OFF / 手動スタメン運用） / code: V4_MANUAL_LINEUP", code: "V4_MANUAL_LINEUP" };
+    }
+
     function buildTodayOpsModel(payload, games, now = new Date()) {
       const gameItems = listItems(games, "games");
       const todayGames = filterGames(gameItems, "today");
@@ -117,7 +129,8 @@
       const todayJobs = todayGames.flatMap((game) => listItems(game?.jobs, "jobs"));
       const historicalJobs = gameItems.filter((game) => !todayGames.includes(game)).flatMap((game) => listItems(game?.jobs, "jobs"));
       const latestCompleted = latestOpsJob({ jobs: todayJobs }, ["completed"]);
-      const latestFailed = latestOpsJob({ jobs: currentFailedJobs({ jobs: todayJobs }) }, ["failed"]);
+      const todayFailedJobs = currentFailedJobs({ jobs: todayJobs }).filter((job) => !v4SemiAuto || !isV4DisabledFetchJob(job));
+      const latestFailed = latestOpsJob({ jobs: todayFailedJobs }, ["failed"]);
       const cronLastRunAt = payload?.todayOps?.cronLastRunAt || null;
       const cronIntervalMinutes = Number(payload?.todayOps?.cronIntervalMinutes) || 1;
       const cronGraceMinutes = Number.isFinite(Number(payload?.todayOps?.cronGraceMinutes)) ? Number(payload.todayOps.cronGraceMinutes) : 2;
@@ -133,16 +146,16 @@
         const canonical = game?.canonicalArtifacts?.aggregate || null;
         const publicationAt = new Date(game?.schedule?.publicationAt || "").getTime();
         const published = gameState === "published" || game?.publicationStatus === "published";
-        const failedJob = currentFailedJobs(game)[0] || null;
+        const failedJob = currentFailedJobs(game).find((job) => !v4SemiAuto || !isV4DisabledFetchJob(job)) || null;
         const manualAction = gameState === "manual_action_required";
         const lineupOverdue = !v4SemiAuto && !["lineup_ready", "scored", "ranked", "published"].includes(gameState) && Number.isFinite(new Date(game?.startAt || "").getTime()) && new Date(game.startAt).getTime() <= now.getTime();
         const publicationOverdue = !published && Number.isFinite(publicationAt) && publicationAt <= now.getTime();
         const attention = Boolean(failedJob || manualAction || lineupOverdue || publicationOverdue || canonical?.needsAttention === true);
         const lineupStatus = v4SemiAuto
-          ? { status: canonical ? (canonical.lineupReady ? "ok" : canonical.needsAttention ? "attention" : "waiting") : (["lineup_ready", "scored", "ranked", "published"].includes(gameState) ? "ok" : "waiting"), detail: canonical?.lineupReady ? "正式スタメン確定済み" : "V4: 管理者が手動入力・正式確定" }
+          ? { status: canonical ? (canonical.lineupReady ? "ok" : canonical.needsAttention ? "attention" : "waiting") : (["lineup_ready", "scored", "ranked", "published"].includes(gameState) ? "ok" : "waiting"), ...v4ManualStageDetail(game, "lineup", canonical, gameState) }
           : lineupDisplayState(game, now);
-        const rosterStatus = v4SemiAuto && !game?.rosterDiagnostics?.rosterSnapshotExists
-          ? { status: "waiting", detail: "V4: ロースター自動取得OFF（手動管理はP1）" }
+        const rosterStatus = v4SemiAuto
+          ? { status: "waiting", ...v4ManualStageDetail(game, "roster", canonical, gameState) }
           : rosterDisplayState(game);
         return {
           game,
@@ -181,8 +194,8 @@
         overallStatus: attention ? "attention" : gameModels.some((model) => model.status === "waiting") ? "waiting" : "ok",
         openJobs: todayJobs.filter((job) => ["pending", "claimed", "retry_wait"].includes(job.status)).length,
         retryWaitJobs: todayJobs.filter((job) => job.status === "retry_wait").length,
-        failedJobs: currentFailedJobs({ jobs: todayJobs }).length,
-        todayFailedJobs: currentFailedJobs({ jobs: todayJobs }).length,
+        failedJobs: todayFailedJobs.length,
+        todayFailedJobs: todayFailedJobs.length,
         historicalFailedJobs: currentFailedJobs({ jobs: historicalJobs }).length,
         historicalRetryWaitJobs: historicalJobs.filter((job) => job.status === "retry_wait").length,
         latestCompleted,

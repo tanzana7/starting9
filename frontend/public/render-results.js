@@ -154,8 +154,11 @@
       if (!card || !container) return;
 
       const bestNine = deps.state.dailyBestNine;
-      const displayedResult = deps.state.resultHistory.result || deps.state.result || null;
-      const unavailable = deps.getPublicResultAvailability?.(displayedResult) || null;
+      // Best Nine is global; an account that did not participate in the game
+      // still sees the same published leaderboard. Personal result availability
+      // must remain isolated to renderScoreResult().
+      const globalGame = deps.state.previousResultGame?.game || null;
+      const unavailable = deps.getPublicResultAvailability?.(globalGame) || null;
       const isPublished = bestNine.status === "published";
       card.classList.toggle("hidden", !isPublished || Boolean(unavailable));
       if (!isPublished || unavailable) {

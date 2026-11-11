@@ -1,12 +1,13 @@
 import { pathToFileURL } from "node:url";
 import { evaluateUnattendedCheckpoint } from "./unattended-observer.mjs";
+import { fightersRehearsal } from "./rehearsal-clock.js";
 
 const TEST_AUTH_ORIGIN = "https://starting9-test-auth.starting9.workers.dev";
 const AUDIENCE = "starting9-fighters-scheduled-driver";
 const WORKFLOW_FILE = "fighters-unattended-driver.yml";
 const TICK_INTERVAL_MS = 60_000;
 const CHAIN_BUDGET_MS = 240 * 60_000;
-const STALL_TICKS = 45;
+const STALL_TICKS = 20;
 const MAX_CONSECUTIVE_FAILURES = 30;
 
 export function evaluateDriverInvocation({ eventName, mode = "", now = new Date() } = {}) {
@@ -88,9 +89,8 @@ function sleep(ms) {
 async function runChainLoop() {
   const startedAt = Date.now();
   let consecutiveFailures = 0;
-  let lastSignature = "";
-  let stalledTicks = 0;
   let siblingBaseline = "";
+  let stalledTicks = 0;
   while (Date.now() - startedAt < CHAIN_BUDGET_MS) {
     try {
       const { response, payload } = await sendScheduledTick();
@@ -114,24 +114,37 @@ async function runChainLoop() {
         if (!siblingBaseline) {
           siblingBaseline = sibling.fingerprint;
         } else if (sibling.fingerprint !== siblingBaseline) {
-          throw new Error("sibling_contest_changed");
+          throw Object.assign(new Error("sibling_contest_changed"), { fatal: true });
         }
       }
       if (fighters.state === "published") {
         const verdict = evaluateUnattendedCheckpoint("final", observation);
-        if (!verdict.ok) throw new Error(`final_checkpoint_failed:${verdict.code}`);
+        if (!verdict.ok) throw Object.assign(new Error(`final_checkpoint_failed:${verdict.code}`), { fatal: true });
         console.log("FIGHTERS UNATTENDED AUTOMATION PASS");
         console.log("FIGHTERS_DRIVER_CHAIN_COMPLETE reason=published");
         return;
       }
-      const signature = `${fighters.state}:${fighters.predictions}:${fighters.officialLineupRows}:${fighters.scoredPredictions}`;
-      stalledTicks = signature === lastSignature ? stalledTicks + 1 : 0;
-      lastSignature = signature;
-      if (stalledTicks >= STALL_TICKS) {
-        console.log(`FIGHTERS_DRIVER_CHAIN_STALLED signature=${signature}`);
-        return;
+      // Only treat silence as a stall where progress was actually due: the
+      // seeded predictions before the cutoff and the close that follows it.
+      // A healthy chain legitimately waits hours between first pitch and result.
+      const scenario = fightersRehearsal();
+      const nowMs = Date.now();
+      const pastCutoff = nowMs >= Date.parse(scenario.seedClosesAt);
+      const seedMissed = pastCutoff && Number(fighters.predictions || 0) < scenario.userCount;
+      const closeMissed = nowMs >= Date.parse(scenario.seedClosesAt) + 60 * 60_000
+        && fighters.state === "scheduled";
+      if (seedMissed || closeMissed) {
+        stalledTicks += 1;
+        if (stalledTicks >= STALL_TICKS) {
+          console.log(`FIGHTERS_DRIVER_CHAIN_STALLED reason=${seedMissed ? "predictions_not_seeded" : "prediction_close_not_applied"}`);
+          process.exitCode = 1;
+          return;
+        }
+      } else {
+        stalledTicks = 0;
       }
     } catch (error) {
+      if (error?.fatal) throw error;
       consecutiveFailures += 1;
       const safe = /^[a-z0-9:_-]{1,100}$/i.test(String(error?.message || "")) ? error.message : "chain_tick_failed";
       console.error(`FIGHTERS_DRIVER_CHAIN_ERROR ${safe} consecutive=${consecutiveFailures}`);

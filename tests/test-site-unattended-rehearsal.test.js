@@ -108,6 +108,10 @@ test("driver chains ticks from ignition or continuation and never derives its ow
   assert.match(driverSource, /actions\/workflows/);
   assert.match(driverSource, /evaluateUnattendedCheckpoint\("final", observation\)/);
   assert.match(driverSource, /sibling_contest_changed/);
+  // A healthy chain waits hours between first pitch and result, so stalls are
+  // only declared where progress was due.
+  assert.match(driverSource, /predictions_not_seeded/);
+  assert.match(driverSource, /prediction_close_not_applied/);
   assert.doesNotMatch(driverSource, /logicalNow|nowOverride|scheduledTime\s*:/);
 });
 

@@ -90,6 +90,7 @@ async function runChainLoop() {
   let consecutiveFailures = 0;
   let lastSignature = "";
   let stalledTicks = 0;
+  let siblingBaseline = "";
   while (Date.now() - startedAt < CHAIN_BUDGET_MS) {
     try {
       const { response, payload } = await sendScheduledTick();
@@ -103,9 +104,19 @@ async function runChainLoop() {
       consecutiveFailures = 0;
       const observation = await readObservation();
       const fighters = observation?.fighters || {};
+      const sibling = observation?.hawks || {};
       console.log(`FIGHTERS_CHAIN_TICK state=${fighters.state || "unknown"}`
         + ` predictions=${fighters.predictions ?? "?"} lineup=${fighters.officialLineupRows ?? "?"}`
         + ` scored=${fighters.scoredPredictions ?? "?"} jobs_completed=${fighters.jobs?.completed ?? "?"}`);
+      // Sibling contests share the physical game. Whatever baseline the sibling
+      // starts this chain with must still be its state at the end.
+      if (sibling.fingerprint) {
+        if (!siblingBaseline) {
+          siblingBaseline = sibling.fingerprint;
+        } else if (sibling.fingerprint !== siblingBaseline) {
+          throw new Error("sibling_contest_changed");
+        }
+      }
       if (fighters.state === "published") {
         const verdict = evaluateUnattendedCheckpoint("final", observation);
         if (!verdict.ok) throw new Error(`final_checkpoint_failed:${verdict.code}`);

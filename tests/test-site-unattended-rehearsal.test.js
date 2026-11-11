@@ -107,6 +107,7 @@ test("driver chains ticks from ignition or continuation and never derives its ow
   assert.match(driverSource, /GITHUB_EVENT_NAME/);
   assert.match(driverSource, /actions\/workflows/);
   assert.match(driverSource, /evaluateUnattendedCheckpoint\("final", observation\)/);
+  assert.match(driverSource, /sibling_contest_changed/);
   assert.doesNotMatch(driverSource, /logicalNow|nowOverride|scheduledTime\s*:/);
 });
 
@@ -178,4 +179,10 @@ test("observer checkpoints are read-only assertions and report exact pipeline fa
     jobTypes: { ...requiredJobTypes, score: { pending: 1 } } } }).code, "job_incomplete_score");
   assert.equal(evaluateUnattendedCheckpoint("final", { ...ready, game: { ...ready.game, startAt: atOffset(-60) } }).code,
     "schedule_not_discovered");
+  // A scheduled sibling is a valid baseline for the rolling fixture; only a
+  // second publication proves this run advanced it.
+  assert.deepEqual(evaluateUnattendedCheckpoint("final", { ...ready,
+    hawks: { state: "scheduled", publicationStatus: null, publicationCount: 0 } }), { ok: true });
+  assert.equal(evaluateUnattendedCheckpoint("final", { ...ready,
+    hawks: { state: "published", publicationStatus: "published", publicationCount: 2 } }).code, "hawks_sibling_changed");
 });

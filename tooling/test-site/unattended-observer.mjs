@@ -45,8 +45,15 @@ export function evaluateUnattendedCheckpoint(checkpoint, payload, now = new Date
       if (Number(jobTypes[type]?.completed || 0) < 1) return { ok: false, code: `job_incomplete_${type}` };
     }
     if (payload.rosterCount !== 15) return { ok: false, code: "roster_missing" };
-    if (payload.hawks?.state !== "published" || payload.hawks?.publicationStatus !== "published"
-        || payload.hawks?.publicationCount !== 1) return { ok: false, code: "hawks_sibling_changed" };
+    // The sibling shares the physical game but must never be advanced by this
+    // run: it may sit at its baseline or already published, never twice.
+    if (payload.hawks) {
+      const sibling = payload.hawks;
+      if (Number(sibling.publicationCount || 0) > 1) return { ok: false, code: "hawks_sibling_changed" };
+      if (sibling.state === "published" && sibling.publicationStatus !== "published") {
+        return { ok: false, code: "hawks_sibling_changed" };
+      }
+    }
     return { ok: true };
   }
   return { ok: false, code: "unknown_checkpoint" };

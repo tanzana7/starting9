@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
+import { fightersRehearsal } from "./rehearsal-clock.js";
 
-const SCENARIO_DATE = "2026-10-25";
 const TEST_AUTH_ORIGIN = "https://starting9-test-auth.starting9.workers.dev";
 const CHECKPOINT_BY_CRON = new Map([
   ["30 4 * * *", "before_cutoff"],
@@ -9,10 +9,11 @@ const CHECKPOINT_BY_CRON = new Map([
   ["0 11 * * *", "final"]
 ]);
 
-export function evaluateUnattendedCheckpoint(checkpoint, payload) {
-  if (payload?.ok !== true || payload?.game?.providerGameId !== "g-t-4"
-      || payload?.game?.date !== SCENARIO_DATE
-      || Date.parse(payload?.game?.startAt) !== Date.parse("2026-10-25T06:00:00.000Z")) {
+export function evaluateUnattendedCheckpoint(checkpoint, payload, now = new Date()) {
+  const scenario = fightersRehearsal(now);
+  if (payload?.ok !== true || payload?.game?.providerGameId !== scenario.gameCode
+      || payload?.game?.date !== scenario.date
+      || Date.parse(payload?.game?.startAt) !== Date.parse(scenario.startAt)) {
     return { ok: false, code: "schedule_not_discovered" };
   }
   const fighters = payload.fighters || {};
@@ -51,16 +52,16 @@ export function evaluateUnattendedCheckpoint(checkpoint, payload) {
   return { ok: false, code: "unknown_checkpoint" };
 }
 
+function normalizeCronExpression(schedule) {
+  const fields = schedule.trim().split(/\s+/);
+  if (fields.length !== 5) return schedule.trim();
+  return `${fields[0]} ${fields[1]} * * ${fields[4]}`;
+}
+
 async function run() {
-  const japanDate = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit"
-  }).format(new Date());
-  if (japanDate !== SCENARIO_DATE) {
-    console.log(`UNATTENDED_OBSERVER_NOOP date=${japanDate}`);
-    return;
-  }
   const schedule = String(process.env.GITHUB_EVENT_SCHEDULE || "");
-  const checkpoint = CHECKPOINT_BY_CRON.get(schedule);
+  const checkpoint = String(process.env.OBSERVER_CHECKPOINT || "")
+    || CHECKPOINT_BY_CRON.get(normalizeCronExpression(schedule));
   if (!checkpoint) throw new Error("observer_checkpoint_unmapped");
 
   const healthResponse = await fetch(`${TEST_AUTH_ORIGIN}/health`, { method: "GET", cache: "no-store" });
@@ -84,7 +85,7 @@ async function run() {
     });
     const html = source.ok ? await source.text() : "";
     if (!source.ok || !/data-game-status="final"/.test(html)) throw new Error("final_result_source_unavailable");
-    console.log("FIGHTERS 2026-10-25 UNATTENDED AUTOMATION PASS");
+    console.log("FIGHTERS UNATTENDED AUTOMATION PASS");
   } else {
     console.log(`UNATTENDED_OBSERVER_CHECKPOINT_PASS checkpoint=${checkpoint}`);
   }

@@ -165,7 +165,7 @@ test("E2E admin provisioning uses ordinary registration/login and revokes its se
   assert.equal(staleSession.payload.authenticated, false);
 });
 
-test("Fighters scheduled OIDC is bound to the exact schedule workflow and auth-check cannot tick", async (t) => {
+test("Fighters scheduled OIDC is bound to the pinned driver workflow for both ignition and chained ticks", async (t) => {
   const f = await fixture();
   t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
   const workflowRef = "tanzana7/starting9/.github/workflows/fighters-unattended-driver.yml@refs/heads/main";
@@ -181,7 +181,9 @@ test("Fighters scheduled OIDC is bound to the exact schedule workflow and auth-c
   });
   assert.equal((await verifyFightersScheduledDriverToken(scheduledToken.token)).runId, scheduledToken.runId);
   assert.equal((await verifyFightersDriverAuthCheckToken(authToken.token)).runId, authToken.runId);
-  await assert.rejects(verifyFightersScheduledDriverToken(authToken.token));
+  // Chained continuation runs dispatch the same pinned workflow, so the tick
+  // endpoint must accept their workflow_dispatch OIDC tokens as well.
+  assert.equal((await verifyFightersScheduledDriverToken(authToken.token)).runId, authToken.runId);
   await assert.rejects(verifyFightersDriverAuthCheckToken(scheduledToken.token));
 
   const anonymous = await f.request("/api/test/admin/scheduled-tick/health", { method: "POST" });
@@ -203,10 +205,13 @@ test("Fighters scheduled OIDC is bound to the exact schedule workflow and auth-c
   assert.equal(health.payload.environment, "test");
   assert.equal(health.payload.service, "starting9-test-auth");
 
-  const authCheckCannotTick = await f.request("/api/test/admin/scheduled-tick", {
+  // Chained continuation ticks arrive through workflow_dispatch of the same
+  // pinned workflow, so the tick endpoint accepts them; the endpoint still
+  // ignores caller-supplied time and uses the server wall clock.
+  const chainedTick = await f.request("/api/test/admin/scheduled-tick", {
     method: "POST", authorization: authToken.token, body: { now: "2026-10-25T06:00:00.000Z" }
   });
-  assert.equal(authCheckCannotTick.response.status, 404);
+  assert.equal(chainedTick.response.status, 409);
   const outsideWindow = await f.request("/api/test/admin/scheduled-tick", {
     method: "POST", authorization: scheduledToken.token, body: { now: "2026-10-25T06:00:00.000Z" }
   });
@@ -600,6 +605,9 @@ test("parsed simulator roster IDs are trusted by the same Test prediction save p
 test("Fighters auto-seeder exercises normal prediction writes, exact cutoff, and the full isolated formal pipeline", async (t) => {
   const f = await fixture();
   let simulatorLineupState = "pre-lineup";
+  // The simulator serves the rehearsal fixture's lifecycle from the real clock;
+  // this test drives the pipeline at a synthetic instant, so pin the same one.
+  let simuClock = "";
   t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
   f.env.S9SIMU_ENABLED = "true";
   f.env.S9SIMU_BASE_URL = "https://s9simu.pages.dev";
@@ -613,7 +621,8 @@ test("Fighters auto-seeder exercises normal prediction writes, exact cutoff, and
       SIMU_NPB_STATE: {
         async get(key) { return key === "lineup-state" ? simulatorLineupState : null; },
         async put(_key, value) { simulatorLineupState = value; }
-      }
+      },
+      SIMU_NPB_CLOCK: simuClock
     }, { TEST_TEAMS, TEST_TEAM_GROUPS });
   });
 
@@ -629,6 +638,7 @@ test("Fighters auto-seeder exercises normal prediction writes, exact cutoff, and
   assert.equal(game.home_team, TEST_TEAMS.hawks.key);
   assert.equal(game.away_team, TEST_TEAMS.fighters.key);
   assert.equal(new Date(game.start_at).getUTCHours(), 6, "15:00 JST simulator start is preserved");
+  simuClock = new Date(Date.parse(game.start_at) + 10 * 60_000).toISOString();
   const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=fighters&simuNpb=1`;
   const rosterResult = await f.request(`/api/game-day-roster${query}`, { cookie: adminCookie });
   assert.equal(rosterResult.response.status, 200);
@@ -840,6 +850,7 @@ test("a published same-game sibling does not block the other contest's official 
   const f = await fixture();
   const originalFetch = globalThis.fetch;
   const simulatorState = { value: "pre-lineup" };
+  let simuClock = "";
   t.after(() => { globalThis.fetch = originalFetch; f.restoreFetch(); f.database.close(); f.audit.close(); });
   f.env.S9SIMU_ENABLED = "true";
   f.env.S9SIMU_BASE_URL = "https://s9simu.pages.dev";
@@ -853,7 +864,8 @@ test("a published same-game sibling does not block the other contest's official 
       SIMU_NPB_STATE: {
         async get(key) { return key === "lineup-state" ? simulatorState.value : null; },
         async put(_key, value) { simulatorState.value = value; }
-      }
+      },
+      SIMU_NPB_CLOCK: simuClock
     }, { TEST_TEAMS, TEST_TEAM_GROUPS });
   };
 
@@ -907,6 +919,7 @@ test("a published same-game sibling does not block the other contest's official 
 
   simulatorState.value = "available";
   const postGame = new Date(startAt.getTime() + 10 * 60_000);
+  simuClock = postGame.toISOString();
   async function captureUntilReady(context) {
     let last;
     for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -981,6 +994,8 @@ test("official simulator lineups finalize through the formal pipeline for all tw
   const f = await fixture();
   const originalFetch = globalThis.fetch;
   const simulatorState = { value: "available" };
+  // Pin the simulator lifecycle to the instant this test drives the pipeline.
+  let simuClock = "";
   t.after(() => { globalThis.fetch = originalFetch; f.restoreFetch(); f.database.close(); f.audit.close(); });
   f.env.S9SIMU_ENABLED = "true";
   f.env.S9SIMU_BASE_URL = "https://s9simu.pages.dev";
@@ -996,7 +1011,8 @@ test("official simulator lineups finalize through the formal pipeline for all tw
       SIMU_NPB_STATE: {
         async get(key) { return key === "lineup-state" ? simulatorState.value : null; },
         async put(_key, value) { simulatorState.value = value; }
-      }
+      },
+      SIMU_NPB_CLOCK: simuClock
     }, { TEST_TEAMS, TEST_TEAM_GROUPS });
   };
 
@@ -1009,6 +1025,7 @@ test("official simulator lineups finalize through the formal pipeline for all tw
   assert.equal(scheduled.response.status, 200);
   const physicalGames = scheduled.payload.physicalGames;
   assert.equal(physicalGames.length, 6);
+  simuClock = new Date(Date.parse(physicalGames[0].start_at) + 10 * 60_000).toISOString();
 
   const teamsByKey = new Map(Object.entries(TEST_TEAMS));
   const contexts = [];

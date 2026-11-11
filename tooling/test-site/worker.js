@@ -449,9 +449,9 @@ async function resetFightersRehearsalContest(db, {
         ORDER BY updated_at DESC, id DESC LIMIT 1), games.npb_game_code) AS provider_game_id
     FROM games WHERE games.internal_game_id = ?1 LIMIT 1`).bind(internalGameId).first();
   const identityFailure = !game ? "game_missing"
-    : game.provider_game_id !== "g-t-4" ? "provider_game_code_mismatch"
-      : game.game_date !== "2026-10-25" ? "game_date_mismatch"
-        : Date.parse(String(game.start_time || "")) !== Date.parse("2026-10-25T06:00:00.000Z")
+    : game.provider_game_id !== FIGHTERS_REHEARSAL.gameCode ? "provider_game_code_mismatch"
+      : game.game_date !== FIGHTERS_REHEARSAL.date ? "game_date_mismatch"
+        : Date.parse(String(game.start_time || "")) !== Date.parse(FIGHTERS_REHEARSAL.startAt)
           ? "start_time_mismatch" : "";
   if (identityFailure) {
     return { ok: false, status: 409, code: "REHEARSAL_GAME_IDENTITY_MISMATCH", reason: identityFailure };
@@ -676,8 +676,8 @@ async function handleSyntheticTestUserProvisioning(request, env, ctx, input, ori
   if (!await requireTestAdmin(request, env, ctx)) {
     return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
   }
-  if (input?.rehearsalId !== "fighters-2026-10-25-1500"
-      || input?.seed !== 20261025 || input?.count !== 10) {
+  if (input?.rehearsalId !== FIGHTERS_REHEARSAL.scenario
+      || input?.seed !== FIGHTERS_REHEARSAL.seed || input?.count !== FIGHTERS_REHEARSAL.userCount) {
     return jsonResponse({ ok: false, code: "INVALID_SYNTHETIC_REHEARSAL" }, 400, origin);
   }
   try {

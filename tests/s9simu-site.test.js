@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { TEST_TEAMS, TEST_TEAM_GROUPS, TEST_TEAM_KEYS } from "../tooling/test-site/teams.js";
 import { handleSimulatedNpbRequest, simulatorGameDate, simulatorGames, simulatorRoster } from "../tooling/test-site/simu-npb/source.js";
+import { fightersRehearsal } from "../tooling/test-site/rehearsal-clock.js";
 import { parseSimulatorResponse, resolveNpbSource } from "../backend/npb-source-adapter.js";
 import { fetchLatestPublicRoster } from "../auth-worker.js";
 import { extractScheduleGames, extractTeamRoster } from "../cloudflare-worker.js";
@@ -47,7 +48,8 @@ test("simulated NPB schedule passes the existing official schedule parser for si
   assert.equal(parsed.length, 6);
   assert.equal(new Set(parsed.flatMap((game) => [game.homeTeam, game.awayTeam])).size, 12);
   assert.ok(parsed.every((game) => game.gameCode));
-  assert.equal(parsed.find((game) => game.gameCode === "g-t-4")?.startTime, date === "2026-10-25" ? "15:00" : "18:00");
+  const rehearsalDate = fightersRehearsal().date;
+  assert.equal(parsed.find((game) => game.gameCode === "g-t-4")?.startTime, date === rehearsalDate ? "15:00" : "18:00");
   const otherDate = new Date(`${date}T00:00:00+09:00`);
   otherDate.setDate(otherDate.getDate() + 1);
   const nextDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(otherDate);
@@ -56,16 +58,20 @@ test("simulated NPB schedule passes the existing official schedule parser for si
   assert.equal((await sourceRequest(`/simu-npb/games/${year}/schedule_${month}_detail.html?date=not-a-date&team=all`)).status, 400);
 });
 
-test("the unattended October 25 Fighters fixture exposes its actual 15:00 start time to the NPB parser", async () => {
-  const date = "2026-10-25";
-  const page = await sourceRequest(`/simu-npb/games/2026/schedule_10_detail.html?date=${date}&team=all`);
+test("the unattended Fighters fixture exposes its actual 15:00 start time to the NPB parser", async () => {
+  const date = fightersRehearsal().date;
+  const [year, month] = date.split("-");
+  const page = await sourceRequest(`/simu-npb/games/${year}/schedule_${month}_detail.html?date=${date}&team=all`);
   assert.equal(page.status, 200);
   const parsed = extractScheduleGames(await page.text(), date);
   const fighters = parsed.filter((game) => game.gameCode === "g-t-4");
   assert.equal(fighters.length, 1);
   assert.equal(fighters[0].startTime, "15:00");
-  assert.equal(simulatorGames("2026-10-26", TEST_TEAMS, TEST_TEAM_GROUPS)
-    .find((game) => game.npbGameCode === "g-t-4")?.startAt, "2026-10-26T18:00:00+09:00");
+  const otherDate = new Date(`${date}T00:00:00Z`);
+  otherDate.setUTCDate(otherDate.getUTCDate() + 1);
+  const otherIso = otherDate.toISOString().slice(0, 10);
+  assert.equal(simulatorGames(otherIso, TEST_TEAMS, TEST_TEAM_GROUPS)
+    .find((game) => game.npbGameCode === "g-t-4")?.startAt, `${otherIso}T18:00:00+09:00`);
 });
 
 test("all twelve simulated rosters pass the existing NPB roster parser without cross-team identities", async () => {

@@ -1,26 +1,37 @@
 import { SIMULATED_NPB_ROSTERS_2026 } from "./rosters.js";
-import { FIGHTERS_REHEARSAL, isFightersRehearsalDay, simulatorRehearsalLifecycle } from "../rehearsal-clock.js";
+import { fightersRehearsal, simulatorRehearsalLifecycle } from "../rehearsal-clock.js";
 
 const POSITION_SEQUENCE = Object.freeze(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const LINEUP_KEY_PREFIX = "lineup:v1:";
 const LINEUP_MAX_BODY_BYTES = 16 * 1024;
 
 export function simulatorGameDate(now = new Date()) {
-  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
-  jst.setUTCDate(jst.getUTCDate() + 1);
-  return `${jst.getUTCFullYear()}-${String(jst.getUTCMonth() + 1).padStart(2, "0")}-${String(jst.getUTCDate()).padStart(2, "0")}`;
+  // The simulator and the unattended rehearsal share one anchor: the current
+  // JST day, whose 15:00 fixture is the rehearsal game.
+  return fightersRehearsal(now).date;
 }
 
 function testOnlyNotice() {
   return `<p>SIMULATED NPB · TEST DATA ONLY</p>`;
 }
 
+/**
+ * The rehearsal lifecycle follows the real clock. Test-only runs that drive the
+ * pipeline at a synthetic time can pin the same instant with SIMU_NPB_CLOCK;
+ * production and the unattended chain never set it.
+ */
+function rehearsalNow(env) {
+  const override = String(env?.SIMU_NPB_CLOCK || "").trim();
+  const parsed = override ? new Date(override) : null;
+  return parsed && !Number.isNaN(parsed.getTime()) ? parsed : new Date();
+}
+
 export function simulatorGames(date, teams, groups) {
   return groups.map((group, index) => ({
     gameDate: date,
-    // Only the dated unattended fixture uses the 15:00 start; the same team
-    // pairing on a later rolling simulator slate returns to the normal slot.
-    startAt: `${date}T${date === FIGHTERS_REHEARSAL.date && group.homeKey === "hawks" && group.awayKey === "fighters" ? "15:00" : "18:00"}:00+09:00`,
+    // The Fighters/Hawks rehearsal pairing uses the 15:00 start on the
+    // rehearsal day; any other date keeps the normal 18:00 slot.
+    startAt: `${date}T${date === fightersRehearsal().date && group.homeKey === "hawks" && group.awayKey === "fighters" ? "15:00" : "18:00"}:00+09:00`,
     homeTeam: teams[group.homeKey].displayName,
     awayTeam: teams[group.awayKey].displayName,
     homeKey: group.homeKey,
@@ -32,10 +43,9 @@ export function simulatorGames(date, teams, groups) {
 }
 
 function gamesForScheduleDate(date, teams, groups) {
-  // The one unattended rehearsal keeps its original provider fixture address
-  // on game day; the generic simulator otherwise continues serving tomorrow's
-  // rolling slate as before.
-  if (date === FIGHTERS_REHEARSAL.date || date === simulatorGameDate()) {
+  // The rehearsal fixture is served on the rehearsal day; the generic
+  // simulator otherwise keeps its rolling slate address.
+  if (date === fightersRehearsal().date || date === simulatorGameDate()) {
     return simulatorGames(date, teams, groups);
   }
   return [];
@@ -424,8 +434,10 @@ export async function handleSimulatedNpbRequest(request, env = {}, { TEST_TEAMS,
     try {
       const stored = await readStoredLineups(env, game, TEST_TEAMS);
       const lineup = stored?.[`${teamKey === game.awayKey ? "away" : "home"}Lineup`] || defaultLineup(teamKey, TEST_TEAMS);
-      const lifecycle = isFightersRehearsalDay() && requestedDate === FIGHTERS_REHEARSAL.date
-        && game.npbGameCode === FIGHTERS_REHEARSAL.gameCode ? simulatorRehearsalLifecycle() : null;
+      const now = rehearsalNow(env);
+      const scenario = fightersRehearsal(now);
+      const lifecycle = requestedDate === scenario.date && game.npbGameCode === scenario.gameCode
+        ? simulatorRehearsalLifecycle(now) : null;
       const available = lifecycle ? lifecycle.lineupAvailable : Boolean(stored) || lineupState === "available";
       return htmlResponse(lineupPage(game, teamKey, available, TEST_TEAMS, lineup, lifecycle?.status || game.status));
     } catch (error) {

@@ -4,6 +4,7 @@ import { createTestSiteMultiTeamFixture } from "./helpers/test-site-multi-team-f
 import { assertDistinctTestTeamIdentity, TEST_TEAMS, TEST_TEAM_GROUPS, TEST_TEAM_KEYS, testTeamFixture } from "../tooling/test-site/teams.js";
 import teamContext from "../frontend/shared/team-context.js";
 import { normalizeScheduleTeamCode } from "../game-schedule-detection.js";
+import { FIGHTERS_REHEARSAL } from "../tooling/test-site/rehearsal-clock.js";
 
 const POSITIONS = ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"];
 
@@ -146,8 +147,8 @@ test("Fighters rehearsal reset clears a published target while preserving the pu
   try {
     await f.request(group.homeKey, "/api/test/reset", {});
     const now = new Date().toISOString();
-    f.database.prepare(`UPDATE games SET game_date='2026-10-25', start_time='2026-10-25T15:00:00+09:00'
-      WHERE internal_game_id=?`).run(internalGameId);
+    f.database.prepare(`UPDATE games SET game_date=?, start_time=?
+      WHERE internal_game_id=?`).run(FIGHTERS_REHEARSAL.date, FIGHTERS_REHEARSAL.startAt, internalGameId);
     f.database.prepare(`INSERT INTO game_identifiers
       (internal_game_id, provider, identifier_type, identifier_value, is_primary, created_at, updated_at)
       VALUES (?, 'npb', 'npb_game_code', 'g-t-4', 1, ?, ?)`).run(internalGameId, now, now);
@@ -155,8 +156,8 @@ test("Fighters rehearsal reset clears a published target while preserving the pu
       (SELECT identifier_value FROM game_identifiers WHERE internal_game_id=?
         AND provider='npb' AND identifier_type='npb_game_code' ORDER BY updated_at DESC, id DESC LIMIT 1) AS provider_game_id
       FROM games WHERE internal_game_id=?`).get(internalGameId, internalGameId);
-    assert.equal(rehearsalGame.game_date, "2026-10-25");
-    assert.equal(Date.parse(rehearsalGame.start_time), Date.parse("2026-10-25T06:00:00.000Z"));
+    assert.equal(rehearsalGame.game_date, FIGHTERS_REHEARSAL.date);
+    assert.equal(Date.parse(rehearsalGame.start_time), Date.parse(FIGHTERS_REHEARSAL.startAt));
     assert.equal(rehearsalGame.provider_game_id, "g-t-4");
 
     // Submit both contests before advancing the shared physical-game clock.
@@ -165,8 +166,8 @@ test("Fighters rehearsal reset clears a published target while preserving the pu
     await exerciseTeam(f, "hawks", group);
     // The generic local scenario helper shifts game time to its post-game
     // boundary; restore only this isolated physical fixture's rehearsal slot.
-    f.database.prepare(`UPDATE games SET game_date='2026-10-25', start_time='2026-10-25T15:00:00+09:00'
-      WHERE internal_game_id=?`).run(internalGameId);
+    f.database.prepare(`UPDATE games SET game_date=?, start_time=?
+      WHERE internal_game_id=?`).run(FIGHTERS_REHEARSAL.date, FIGHTERS_REHEARSAL.startAt, internalGameId);
     const hawksBefore = await f.request("hawks", `/api/test/rehearsal/snapshot${query("hawks")}`);
     assert.equal(hawksBefore.snapshot.state, "published");
     assert.equal(hawksBefore.snapshot.publicationStatus, "published");
@@ -199,8 +200,8 @@ test("Fighters rehearsal reset clears a published target while preserving the pu
     // Scenario helpers advance the shared local fixture clock; restore only
     // this in-memory test schedule so the reset endpoint rechecks the exact
     // rehearsal identity, not a production/game-wide schedule mutation.
-    f.database.prepare(`UPDATE games SET game_date='2026-10-25', start_time='2026-10-25T15:00:00+09:00'
-      WHERE internal_game_id=?`).run(internalGameId);
+    f.database.prepare(`UPDATE games SET game_date=?, start_time=?
+      WHERE internal_game_id=?`).run(FIGHTERS_REHEARSAL.date, FIGHTERS_REHEARSAL.startAt, internalGameId);
     const publishedFightersBefore = await f.request("fighters", `/api/test/rehearsal/snapshot${query("fighters")}`);
     assert.equal(publishedFightersBefore.snapshot.state, "published");
     assert.equal(publishedFightersBefore.snapshot.publicationStatus, "published");

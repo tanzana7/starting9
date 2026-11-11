@@ -53,14 +53,15 @@ function validRunClaims(claims) {
     && claims.jti.length <= 256;
 }
 
-function validWorkflowClaims(claims, { workflowRef, eventName, audience }) {
+function validWorkflowClaims(claims, { workflowRef, eventNames, eventName, audience }) {
+  const expectedEventNames = Array.isArray(eventNames) ? eventNames : [eventNames ?? eventName];
   return claims.iss === GITHUB_ISSUER
     && isAudienceAllowedFor(claims.aud, audience)
     && claims.sub === EXPECTED_SUBJECT
     && claims.repository === EXPECTED_REPOSITORY
     && String(claims.repository_id || "") === EXPECTED_REPOSITORY_ID
     && claims.ref === "refs/heads/main"
-    && claims.event_name === eventName
+    && expectedEventNames.includes(claims.event_name)
     && claims.workflow_ref === workflowRef
     && /^\d{1,20}$/.test(String(claims.run_id || ""))
     && /^[1-9]\d{0,5}$/.test(String(claims.run_attempt || ""))
@@ -156,9 +157,11 @@ export async function verifyS9SimuRunToken(token, options = {}) {
 }
 
 export function verifyFightersScheduledDriverToken(token, options = {}) {
+  // Chained continuation runs arrive as workflow_dispatch while scheduled
+  // ignitions arrive as schedule; both come from the same pinned workflow.
   return verifyGitHubWorkflowToken(token, {
     workflowRef: FIGHTERS_DRIVER_WORKFLOW_REF,
-    eventName: "schedule",
+    eventNames: ["schedule", "workflow_dispatch"],
     audience: FIGHTERS_DRIVER_AUDIENCE
   }, options);
 }

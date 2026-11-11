@@ -1,11 +1,19 @@
 name: Fighters Unattended Automation Observer
 
+# Read-only checkpoint checker. The chained driver observes every tick; this
+# workflow stays for manual verification only.
 on:
-  schedule:
-    - cron: "30 4 25 10 *"
-    - cron: "5 5 25 10 *"
-    - cron: "30 6 25 10 *"
-    - cron: "0 11 25 10 *"
+  workflow_dispatch:
+    inputs:
+      checkpoint:
+        description: Checkpoint to assert
+        required: true
+        type: choice
+        options:
+          - before_cutoff
+          - after_cutoff
+          - after_lineup
+          - final
 
 permissions:
   contents: read
@@ -30,5 +38,5 @@ jobs:
           node-version: 22
       - name: Read-only checkpoint
         env:
-          GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
+          OBSERVER_CHECKPOINT: ${{ inputs.checkpoint }}
         run: node tooling/test-site/unattended-observer.mjs

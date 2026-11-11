@@ -1,21 +1,31 @@
-name: Fighters Unattended Scheduled Driver
+name: Fighters Unattended Automation Driver
 
+# GitHub Actions cron is only an ignition switch; it cannot be trusted as the
+# clock. Each run chains one authenticated tick loop until the Fighters contest
+# is published, then re-dispatches itself when its time budget runs out.
 on:
   schedule:
-    - cron: "*/5 3-10 25 10 *"
-    - cron: "0,5,10,15,20,25,30 11 25 10 *"
+    # 12:00-12:30 JST ignitions: start the chain before the 13:00-14:00 JST
+    # seed window so synthetic predictions are always submitted pre-cutoff.
+    - cron: "0,30 3 * * *"
+    # Backstop ignitions if a chain dies unexpectedly. Outside the Test
+    # Worker wall-clock window the driver stops on the first 409.
+    - cron: "0 6,9,12 * * *"
   workflow_dispatch:
     inputs:
       mode:
-        description: Non-mutating driver authentication check only
-        required: true
+        description: auth-check validates OIDC only; chain runs the tick loop
+        required: false
+        default: auth-check
         type: choice
         options:
           - auth-check
+          - chain
 
 permissions:
   contents: read
   id-token: write
+  actions: write
 
 concurrency:
   group: fighters-unattended-scheduled-driver
@@ -25,14 +35,19 @@ jobs:
   tick:
     if: github.repository == 'tanzana7/starting9' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 320
     steps:
       - name: Check out main
         uses: actions/checkout@v4
         with:
           ref: main
-      - name: Send one authenticated Test scheduled tick
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run unattended chain driver
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           S9SIMU_DRIVER_MODE: ${{ inputs.mode }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: node tooling/test-site/unattended-driver.mjs

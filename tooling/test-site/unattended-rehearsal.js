@@ -1,7 +1,7 @@
 import { TEST_AUTH_DB_ID, TEST_AUDIT_DB_ID, TEST_CLOUDFLARE_ACCOUNT_ID, TEST_SITE_ID, TEST_AUTH_WORKER,
   isIsolatedTestEnvironment } from "./isolation.js";
 import { FIGHTERS_REHEARSAL, isFightersRehearsalDriverWindow, isFightersRehearsalSeedWindow } from "./rehearsal-clock.js";
-export { FIGHTERS_REHEARSAL, isFightersRehearsalDay, isFightersRehearsalDriverWindow, isFightersRehearsalSeedWindow, simulatorRehearsalLifecycle }
+export { FIGHTERS_REHEARSAL, fightersRehearsal, isFightersRehearsalDay, isFightersRehearsalDriverWindow, isFightersRehearsalSeedWindow, simulatorRehearsalLifecycle }
   from "./rehearsal-clock.js";
 
 export function isArmedFightersTestEnvironment(env = {}) {

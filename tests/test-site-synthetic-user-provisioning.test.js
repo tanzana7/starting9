@@ -4,8 +4,9 @@ import { createTestSiteMultiTeamFixture } from "./helpers/test-site-multi-team-f
 import { buildSyntheticPredictions } from "../tooling/test-site/auto-prediction-seeder.js";
 import { TEST_TEAMS, testTeamFixture } from "../tooling/test-site/teams.js";
 import { V3_TIMING } from "../backend/automation-v3/constants.js";
+import { FIGHTERS_REHEARSAL } from "../tooling/test-site/rehearsal-clock.js";
 
-const REHEARSAL = Object.freeze({ rehearsalId: "fighters-2026-10-25-1500", seed: 20261025, count: 10 });
+const REHEARSAL = Object.freeze({ rehearsalId: FIGHTERS_REHEARSAL.scenario, seed: FIGHTERS_REHEARSAL.seed, count: FIGHTERS_REHEARSAL.userCount });
 
 async function insertOrdinaryUserSession(database) {
   const now = new Date().toISOString();
@@ -101,9 +102,9 @@ test("ten provisioned users save predictions through the normal API and complete
     const contestId = jobs.contestId;
     assert.ok(contestId);
 
-    const startAt = new Date("2026-10-25T06:00:00.000Z");
-    f.database.prepare(`UPDATE games SET game_date='2026-10-25', start_time=?, game_status='scheduled'
-      WHERE internal_game_id=?`).run(startAt.toISOString(), internalGameId);
+    const startAt = new Date(FIGHTERS_REHEARSAL.startAt);
+    f.database.prepare(`UPDATE games SET game_date=?, start_time=?, game_status='scheduled'
+      WHERE internal_game_id=?`).run(FIGHTERS_REHEARSAL.date, startAt.toISOString(), internalGameId);
     const rosterResponse = await f.request("fighters", `/api/game-day-roster?internalGameId=${internalGameId}&testTeam=fighters`);
     assert.equal(rosterResponse.players.length, 15);
     assert.ok(rosterResponse.players.every((player) => player.teamCode === "fighters"

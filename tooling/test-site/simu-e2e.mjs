@@ -119,7 +119,7 @@ async function provisionSyntheticUsers(count, seed) {
   assert.equal(count, 10, "the rehearsal provisions one bounded batch of ten identities");
   const provisioning = await call("/api/test/admin/synthetic-users/provision?testTeam=fighters", {
     method: "POST", admin: true,
-    body: { rehearsalId: "fighters-2026-10-25-1500", seed, count },
+    body: { rehearsalId: FIGHTERS_REHEARSAL.scenario, seed, count },
     expectedStatus: 200
   });
   assert.equal(provisioning.payload.ok, true);
@@ -559,7 +559,7 @@ async function runFightersOperationalRehearsal({ prepareOnly = false } = {}) {
   assert.equal(group.homeKey, "hawks");
   assert.equal(group.awayKey, "fighters");
   const startAt = new Date(game.start_at);
-  assert.equal(startAt.toISOString(), "2026-10-25T06:00:00.000Z", "fixture must be 2026-10-25 15:00 JST");
+  assert.equal(startAt.toISOString(), new Date(FIGHTERS_REHEARSAL.startAt).toISOString(), "fixture must keep the 15:00 JST rehearsal start");
   const queryFor = (teamKey) => `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
 
   const fightersQuery = queryFor("fighters");
@@ -672,7 +672,7 @@ async function runFightersOperationalRehearsal({ prepareOnly = false } = {}) {
     assert.deepEqual(finalHawksSnapshot.payload.snapshot, preservedHawksSnapshot,
       "Fighters preparation must leave the published Hawks contest fingerprint unchanged");
     console.log(`FIGHTERS_UNATTENDED_BASELINE_ARMED: ${JSON.stringify({
-      scenario: "fighters-2026-10-25-1500", date: FIGHTERS_REHEARSAL.date,
+      scenario: FIGHTERS_REHEARSAL.scenario, date: FIGHTERS_REHEARSAL.date,
       startAt: game.start_at, providerGameId: game.game_code, internalGameId: game.internal_game_id,
       contestId: fightersContestId, fightersState: "scheduled", predictions: 0,
       formalJobs: 0, rosterCount: roster.length, hawksState: "published",
@@ -682,7 +682,7 @@ async function runFightersOperationalRehearsal({ prepareOnly = false } = {}) {
   }
 
   const contestId = fightersContestId;
-  const seed = 20261025;
+  const seed = FIGHTERS_REHEARSAL.seed;
   const predictions = buildSyntheticPredictions({ contestId, targetTeam: "fighters", roster, userCount: 10, seed });
   const syntheticUserProvisioning = await provisionSyntheticUsers(predictions.length, seed);
   const users = syntheticUserProvisioning.users;
@@ -777,7 +777,7 @@ async function runFightersOperationalRehearsal({ prepareOnly = false } = {}) {
   }
   publishedContests = 1;
   console.log(`FIGHTERS_REHEARSAL_COMPLETE: ${JSON.stringify({
-    date: "2026-10-25", startAt: game.start_at, opponent: "hawks", providerGameId: game.game_code,
+    date: FIGHTERS_REHEARSAL.date, startAt: game.start_at, opponent: "hawks", providerGameId: game.game_code,
     internalGameId: game.internal_game_id, contestId, seed, users: 10,
     usersCreated: syntheticUserProvisioning.created, usersReused: syntheticUserProvisioning.reused,
     publicRegisterRequests: 0, fightersResetPerformed: resetPerformed, saved,
@@ -913,7 +913,7 @@ if (RUN_MODE === "full") {
 } else if (RUN_MODE === "fighters-rehearsal") {
   assert.equal(publishedContests, 1);
   assert.equal(temporaryUserRetained, false);
-  console.log("Completed the Fighters-only 2026-10-25 15:00 rehearsal; prediction data is retained and all temporary sessions/admin access were revoked.");
+  console.log("Completed the Fighters-only 15:00 rehearsal; prediction data is retained and all temporary sessions/admin access were revoked.");
 } else if (RUN_MODE === "prepare-unattended") {
   assert.equal(publishedContests, 0);
   assert.equal(temporaryUserRetained, false);
